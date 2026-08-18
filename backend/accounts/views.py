@@ -47,6 +47,17 @@ class CloudinaryUploadView(APIView):
         folder = request.data.get('folder', 'sjbebs')
         if not file:
             return Response({'error': 'No file provided.'}, status=400)
+        from django.conf import settings
+        if getattr(settings, 'DEFAULT_FILE_STORAGE', '') == 'django.core.files.storage.FileSystemStorage':
+            from django.core.files.storage import default_storage
+            import os
+            path = default_storage.save(os.path.join(folder, file.name), file)
+            url = default_storage.url(path)
+            # Make sure url includes host if it's relative
+            if url.startswith('/'):
+                url = request.build_absolute_uri(url)
+            return Response({'url': url, 'public_id': path}, status=201)
+
         result = cloudinary.uploader.upload(file, folder=folder)
         return Response({
             'url': result['secure_url'],

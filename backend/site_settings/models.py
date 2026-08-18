@@ -11,9 +11,10 @@ class SiteSettings(models.Model):
     facebook_url = models.URLField(blank=True)
     youtube_url = models.URLField(blank=True)
     twitter_url = models.URLField(blank=True)
+    main_background_image = models.ImageField(upload_to='backgrounds/', blank=True, null=True, help_text="Background image for the main website.")
+    admin_background_image = models.ImageField(upload_to='backgrounds/', blank=True, null=True, help_text="Background image for the admin dashboard.")
     footer_text = models.TextField(blank=True)
     updated_at = models.DateTimeField(auto_now=True)
-
     class Meta:
         verbose_name = 'Site Settings'
         verbose_name_plural = 'Site Settings'
