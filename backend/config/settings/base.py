@@ -47,6 +47,7 @@ LOCAL_APPS = [
     'notices',
     'contact',
     'site_settings',
+    'carousel',
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

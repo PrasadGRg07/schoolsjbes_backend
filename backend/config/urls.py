@@ -32,6 +32,7 @@ urlpatterns = [
     path('api/notices/', include('notices.urls')),
     path('api/contact/', include('contact.urls')),
     path('api/settings/', include('site_settings.urls')),
+    path('api/carousel/', include('carousel.urls')),
 ]
 
 if settings.DEBUG:
