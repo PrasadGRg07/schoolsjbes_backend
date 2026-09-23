@@ -12,7 +12,7 @@ SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-produc
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = [host.strip() for host in config('ALLOWED_HOSTS', default='localhost,127.0.0.1,schoolsjbes-backend.onrender.com').split(',') if host.strip()]
+ALLOWED_HOSTS = ['*']  # Render handles host routing; restrict via firewall/Render settings
 
 # Application definition
 DJANGO_APPS = [
