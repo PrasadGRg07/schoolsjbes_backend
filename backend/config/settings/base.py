@@ -150,12 +150,6 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
-# CORS
-CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in config(
-        'CORS_ALLOWED_ORIGINS',
-        default='http://localhost:3000,http://127.0.0.1:3000,https://schoolsjbes.vercel.app'
-    ).split(',') if origin.strip()
-]
-
+# CORS — allow all origins (safe for public API; restrict if needed)
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
