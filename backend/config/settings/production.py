@@ -16,3 +16,10 @@ SECURE_HSTS_PRELOAD = True
 # WhiteNoise for static files
 # (WhiteNoise middleware is already added in base.py)
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+# CORS Security for Production
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    "https://schoolsjbes.vercel.app",
+]
+
