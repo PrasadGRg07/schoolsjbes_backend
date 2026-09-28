@@ -1,3 +1,5 @@
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import viewsets, filters
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from .models import Notice
@@ -18,4 +20,9 @@ class NoticeViewSet(viewsets.ModelViewSet):
         category = self.request.query_params.get('category')
         if category:
             qs = qs.filter(category=category)
+        if self.request.query_params.get('popup') == 'true':
+            today = timezone.now().date()
+            qs = qs.filter(show_popup=True).filter(
+                Q(popup_expires_at__isnull=True) | Q(popup_expires_at__gte=today)
+            )
         return qs

@@ -1,3 +1,5 @@
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import viewsets, filters
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from .models import NewsEvent
@@ -23,4 +25,9 @@ class NewsEventViewSet(viewsets.ModelViewSet):
         type_filter = self.request.query_params.get('type')
         if type_filter:
             qs = qs.filter(type=type_filter)
+        if self.request.query_params.get('popup') == 'true':
+            today = timezone.now().date()
+            qs = qs.filter(show_popup=True).filter(
+                Q(popup_expires_at__isnull=True) | Q(popup_expires_at__gte=today)
+            )
         return qs

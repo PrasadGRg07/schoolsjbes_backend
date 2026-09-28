@@ -16,6 +16,8 @@ class NewsEvent(models.Model):
     event_date = models.DateField(null=True, blank=True)
     event_location = models.CharField(max_length=300, blank=True)
     is_published = models.BooleanField(default=True)
+    show_popup = models.BooleanField(default=False)
+    popup_expires_at = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

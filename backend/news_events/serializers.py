@@ -11,4 +11,4 @@ class NewsEventSerializer(serializers.ModelSerializer):
 class NewsEventListSerializer(serializers.ModelSerializer):
     class Meta:
         model = NewsEvent
-        fields = ['id', 'title', 'slug', 'type', 'excerpt', 'cover_image_url', 'event_date', 'created_at']
+        fields = ['id', 'title', 'slug', 'type', 'excerpt', 'cover_image_url', 'event_date', 'created_at', 'show_popup', 'popup_expires_at']

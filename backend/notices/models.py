@@ -17,6 +17,8 @@ class Notice(models.Model):
     file_url = models.URLField(blank=True)
     is_published = models.BooleanField(default=True)
     is_important = models.BooleanField(default=False)
+    show_popup = models.BooleanField(default=False)
+    popup_expires_at = models.DateField(null=True, blank=True)
     published_date = models.DateField(auto_now_add=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
