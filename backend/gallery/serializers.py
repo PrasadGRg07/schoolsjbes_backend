@@ -26,7 +26,8 @@ class AlbumListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Album
-        fields = ['id', 'title', 'description', 'cover_image_url', 'date', 'photo_count']
+        # order/is_published are needed by the admin list (reorder buttons, status badge)
+        fields = ['id', 'title', 'description', 'cover_image_url', 'date', 'is_published', 'order', 'photo_count']
 
     def get_photo_count(self, obj):
         return obj.photos.count()

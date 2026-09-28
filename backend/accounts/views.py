@@ -58,8 +58,20 @@ class CloudinaryUploadView(APIView):
                 url = request.build_absolute_uri(url)
             return Response({'url': url, 'public_id': path}, status=201)
 
-        result = cloudinary.uploader.upload(file, folder=folder)
+        # Cloudinary picks the delivery pipeline from the resource type. Images and
+        # videos must use image/video; everything else (pdf, docx, xlsx, zip) has to
+        # be uploaded as 'raw', otherwise the stored URL is not publicly deliverable.
+        content_type = (getattr(file, 'content_type', '') or '').lower()
+        if content_type.startswith('image/'):
+            resource_type = 'image'
+        elif content_type.startswith('video/'):
+            resource_type = 'video'
+        else:
+            resource_type = 'raw'
+
+        result = cloudinary.uploader.upload(file, folder=folder, resource_type=resource_type)
         return Response({
             'url': result['secure_url'],
             'public_id': result['public_id'],
+            'resource_type': resource_type,
         }, status=201)
