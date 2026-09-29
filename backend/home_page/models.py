@@ -22,13 +22,18 @@ def default_stats():
 class HomeHero(models.Model):
     """Singleton — the hero banner at the top of the home page."""
 
-    eyebrow = models.CharField(
-        max_length=200, blank=True, default='Welcome to SJBEBS',
+    eyebrow = models.TextField(
+        blank=True, default='Welcome to SJBEBS',
         help_text='Small line above the heading, e.g. "Welcome to SJBEBS".',
     )
     heading = models.TextField(
         default=DEFAULT_HEADING,
-        help_text='Main heading. Use a new line to break it across two lines.',
+        help_text=(
+            'Main heading. Rich text: the admin editor stores HTML, so the '
+            'font, size, colour and alignment of any word can be changed. '
+            'Values saved before the editor existed are plain text with '
+            'newlines, which are still rendered as line breaks.'
+        ),
     )
     heading_highlight = models.CharField(
         max_length=100, blank=True, default='Bright Minds',
