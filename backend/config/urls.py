@@ -22,6 +22,7 @@ urlpatterns = [
 
     # Public content modules
     path('api/school-info/', include('school_info.urls')),
+    path('api/home/', include('home_page.urls')),
     path('api/about/', include('about.urls')),
     path('api/teachers/', include('teachers.urls')),
     path('api/academics/', include('academics.urls')),
