@@ -11,7 +11,10 @@ class Album(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['-date', 'order']
+        # `order` leads so the admin's up/down buttons control the listing.
+        # It used to sort by `-date` first, which pinned every row to its date
+        # and made reordering a no-op. `-date` is now only a tiebreaker.
+        ordering = ['order', '-date', '-id']
 
     def __str__(self):
         return self.title
