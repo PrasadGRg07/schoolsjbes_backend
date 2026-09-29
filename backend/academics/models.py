@@ -6,6 +6,8 @@ class Programme(models.Model):
     level = models.CharField(max_length=100, blank=True)
     description = models.TextField(blank=True)
     duration = models.CharField(max_length=100, blank=True)
+    cover_image_url = models.URLField(blank=True)
+    images = models.JSONField(default=list, blank=True)
     order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

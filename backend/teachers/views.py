@@ -8,7 +8,7 @@ class TeacherViewSet(viewsets.ModelViewSet):
     serializer_class = TeacherSerializer
     permission_classes = [IsAuthenticatedOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['name', 'designation', 'subject']
+    search_fields = ['name', 'designation', 'department', 'subject', 'email']
     ordering_fields = ['order', 'name']
 
     def get_queryset(self):
