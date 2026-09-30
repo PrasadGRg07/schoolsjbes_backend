@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from academics.models import ClassTeacher, Exam, SchoolClass, StudentResult
 from accounts.models import AdminUser
+from teachers.models import Teacher
 
 
 def teacher_classes(user):
@@ -135,3 +136,104 @@ class MyClassesView(APIView):
             }
             for c in teacher_classes(user)
         ])
+
+
+class TeacherProfileSerializer(serializers.ModelSerializer):
+    """
+    The public-facing staff record that a teacher maintains for themselves.
+
+    This is the same row the admin Teachers page and the website teachers
+    section already read, so anything saved here shows up in both without a
+    second copy. `order` is left to the administrator because it decides the
+    order names appear in.
+    """
+
+    class Meta:
+        model = Teacher
+        fields = [
+            'id', 'name', 'designation', 'department', 'subject', 'qualification',
+            'experience_years', 'gender', 'joining_date', 'email', 'phone', 'address',
+            'bio', 'photo_url', 'facebook_url', 'is_active',
+        ]
+        read_only_fields = ['id']
+
+    def validate_email(self, value):
+        # Blank is allowed, but a second teacher record must not claim the same
+        # address, otherwise the contact links on the public page get crossed.
+        qs = Teacher.objects.filter(email__iexact=value).exclude(pk=self.instance.pk) if self.instance else Teacher.objects.filter(email__iexact=value)
+        if qs.exists():
+            raise serializers.ValidationError('Another staff record already uses this email address.')
+        return value
+
+    def validate_name(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('Your name cannot be empty.')
+        return value.strip()
+
+
+class TeacherProfileView(APIView):
+    """
+    Lets a teacher fill in the staff record that represents them.
+
+    Reading returns an empty, unpublished record when nothing is linked yet, so
+    an untouched account never puts a blank card on the public teachers list.
+    The database row is only created once the teacher actually saves.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if not (user.is_staff or user.is_teacher):
+            return Response({'detail': 'This account is not a teacher account.'}, status=403)
+        return Response(self._payload(user))
+
+    def patch(self, request):
+        user = request.user
+        if not (user.is_staff or user.is_teacher):
+            return Response({'detail': 'This account is not a teacher account.'}, status=403)
+
+        # A nullable one-to-one with no row yet reads back as None rather than
+        # raising, so this is an explicit None test.
+        linked = user.teacher_profile
+        if linked is None:
+            # A reverse relation cannot be passed to create(), so build the
+            # staff row first and then hang the account off it. New records stay
+            # off the public site until the teacher publishes them, so nothing
+            # half-typed shows up on the website.
+            linked = Teacher.objects.create(
+                name=(user.get_full_name() or user.username).strip(),
+                email=user.email or '',
+                is_active=False,
+            )
+            user.teacher_profile = linked
+            user.save(update_fields=['teacher_profile'])
+
+        serializer = TeacherProfileSerializer(linked, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+        serializer.save()
+        return Response(self._payload(user))
+
+    def _payload(self, user):
+        teacher = user.teacher_profile
+        linked = teacher is not None
+        if not linked:
+            # Deliberately left unlinked: attaching an unsaved row to the user
+            # would populate Django's relation cache and make the next lookup in
+            # this request pretend a record already exists.
+            teacher = Teacher(
+                name=(user.get_full_name() or user.username).strip(),
+                email=user.email or '',
+                is_active=False,
+            )
+
+        return {
+            'linked': linked,
+            'username': user.username,
+            'role': user.role,
+            'email': user.email,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'profile': TeacherProfileSerializer(teacher).data,
+        }
