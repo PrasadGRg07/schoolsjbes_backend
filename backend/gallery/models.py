@@ -1,7 +1,9 @@
 from django.db import models
 
+from config.models import CoverCropMixin
 
-class Album(models.Model):
+
+class Album(CoverCropMixin, models.Model):
     title = models.CharField(max_length=200)
     description = models.TextField(blank=True)
     cover_image_url = models.URLField(blank=True)

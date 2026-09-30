@@ -202,3 +202,57 @@ def sanitize_html(value):
     parser.feed(value)
     parser.close()
     return parser.result()
+
+
+# Tags that imply a line break in the rendered text.
+_TEXT_BREAK_TAGS = {
+    'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'tr',
+    'blockquote', 'pre', 'table', 'thead', 'tbody', 'section', 'article',
+}
+
+
+class _TextExtractor(HTMLParser):
+    """Collects the visible text of a document, dropping dropped tags."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in DROP_CONTENT_TAGS:
+            self.skip_depth += 1
+        elif tag in _TEXT_BREAK_TAGS:
+            self.parts.append(' ')
+
+    def handle_endtag(self, tag):
+        if tag in DROP_CONTENT_TAGS:
+            self.skip_depth = max(0, self.skip_depth - 1)
+        elif tag in _TEXT_BREAK_TAGS:
+            self.parts.append(' ')
+
+    def handle_data(self, data):
+        if not self.skip_depth:
+            self.parts.append(data)
+
+    def result(self):
+        return re.sub(r'\s+', ' ', ''.join(self.parts)).strip()
+
+
+def strip_html(value):
+    """Plain-text version of an HTML string.
+
+    Rich-text fields are capped by how much text the reader actually sees, not
+    by how many characters the markup takes, so the limit has to be measured
+    here rather than on the stored string.
+    """
+    if not value:
+        return ''
+    # `&` has to be checked too, not just `<`, or an entity like `&amp;` would
+    # be handed back still encoded.
+    if '<' not in value and '&' not in value:
+        return re.sub(r'\s+', ' ', value).strip()
+    parser = _TextExtractor()
+    parser.feed(value)
+    parser.close()
+    return parser.result()
