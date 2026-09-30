@@ -69,6 +69,54 @@ class AcademicDocument(models.Model):
         return self.title
 
 
+class SchoolClass(models.Model):
+    """
+    A class group such as "Grade 7" or "Nursery A".
+
+    This exists so a teacher can be given charge of a class and then only see
+    and edit the students in it. The free-text `class_name` on Exam is kept for
+    display, and `Exam.school_class` is the reliable link used for scoping.
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+    programme = models.ForeignKey(Programme, on_delete=models.SET_NULL, null=True, blank=True, related_name='classes')
+    is_active = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'name']
+        verbose_name = 'Class'
+        verbose_name_plural = 'Classes'
+
+    def __str__(self):
+        return self.name
+
+
+class ClassTeacher(models.Model):
+    """Which teacher is in charge of which class."""
+
+    teacher = models.ForeignKey(
+        'accounts.AdminUser',
+        on_delete=models.CASCADE,
+        related_name='class_assignments',
+        limit_choices_to={'role': 'teacher'},
+    )
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='teachers')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['school_class__order', 'school_class__name']
+        # A teacher is either in charge of a class or not; no duplicates.
+        constraints = [
+            models.UniqueConstraint(fields=['teacher', 'school_class'], name='uniq_teacher_class'),
+        ]
+
+    def __str__(self):
+        return f"{self.teacher} → {self.school_class}"
+
+
 class Exam(models.Model):
     """
     One result session: a class, a term and an academic year, optionally scoped
@@ -79,6 +127,15 @@ class Exam(models.Model):
 
     title = models.CharField(max_length=200)
     programme = models.ForeignKey(Programme, on_delete=models.CASCADE, null=True, blank=True, related_name='exams')
+    # The class this session belongs to. Null until an admin links it, so an
+    # existing sheet entered with only a class name still works.
+    school_class = models.ForeignKey(
+        SchoolClass,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='exams',
+    )
     class_name = models.CharField(max_length=100, blank=True)
     term = models.CharField(max_length=100, blank=True)
     academic_year = models.CharField(max_length=20, blank=True)

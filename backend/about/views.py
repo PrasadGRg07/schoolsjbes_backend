@@ -1,12 +1,12 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly
 from .models import PrincipalMessage, SchoolHistory
 from .serializers import PrincipalMessageSerializer, SchoolHistorySerializer
 
 
 class PrincipalMessageView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get(self, request):
         obj, _ = PrincipalMessage.objects.get_or_create(pk=1, defaults={
@@ -27,7 +27,7 @@ class PrincipalMessageView(APIView):
 
 
 class SchoolHistoryView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get(self, request):
         obj, _ = SchoolHistory.objects.get_or_create(pk=1)

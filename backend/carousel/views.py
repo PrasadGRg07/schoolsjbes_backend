@@ -1,12 +1,12 @@
 from rest_framework import viewsets, mixins
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly
 from .models import TextSlide, ImageSlide
 from .serializers import TextSlideSerializer, ImageSlideSerializer
 
 
 class TextSlideViewSet(viewsets.ModelViewSet):
     serializer_class = TextSlideSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
         qs = TextSlide.objects.all()
@@ -17,7 +17,7 @@ class TextSlideViewSet(viewsets.ModelViewSet):
 
 class ImageSlideViewSet(viewsets.ModelViewSet):
     serializer_class = ImageSlideSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
         qs = ImageSlide.objects.all()

@@ -1,13 +1,14 @@
 from rest_framework import viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated, AllowAny
+from accounts.permissions import IsAdminOrReadOnly
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import AdmissionInfo, AdmissionApplication
 from .serializers import AdmissionInfoSerializer, AdmissionApplicationSerializer, AdmissionApplicationAdminSerializer
 
 
 class AdmissionInfoView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get(self, request):
         obj, _ = AdmissionInfo.objects.get_or_create(pk=1)
@@ -39,4 +40,4 @@ class AdmissionApplicationView(APIView):
 class AdmissionApplicationAdminViewSet(viewsets.ModelViewSet):
     queryset = AdmissionApplication.objects.all()
     serializer_class = AdmissionApplicationAdminSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminOrReadOnly]

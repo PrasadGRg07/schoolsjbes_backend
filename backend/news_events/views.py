@@ -1,13 +1,13 @@
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import viewsets, filters
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly
 from .models import NewsEvent
 from .serializers import NewsEventSerializer, NewsEventListSerializer
 
 
 class NewsEventViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['title', 'content', 'excerpt']
     ordering_fields = ['created_at', 'event_date']

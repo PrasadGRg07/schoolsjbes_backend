@@ -1,12 +1,13 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly, IsAuthenticated
+from accounts.permissions import IsAdminOrReadOnly
+from rest_framework.permissions import IsAuthenticated
 from .models import SchoolInfo
 from .serializers import SchoolInfoSerializer
 
 
 class SchoolInfoView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get(self, request):
         obj = SchoolInfo.get_instance()

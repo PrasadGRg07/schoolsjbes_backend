@@ -114,7 +114,9 @@ class SubjectMarkSerializer(serializers.ModelSerializer):
 
 
 class StudentResultSerializer(serializers.ModelSerializer):
-    marks = SubjectMarkSerializer(many=True)
+    # Not required: a student is often added to the class list first and given
+    # subject marks afterwards, so an empty marks array is a valid state.
+    marks = SubjectMarkSerializer(many=True, required=False)
     percentage = serializers.SerializerMethodField()
 
     class Meta:
@@ -182,10 +184,24 @@ class ExamSerializer(serializers.ModelSerializer):
     class Meta:
         model = Exam
         fields = [
-            'id', 'title', 'programme', 'class_name', 'term', 'academic_year',
+            'id', 'title', 'programme', 'school_class', 'class_name', 'term', 'academic_year',
             'result_file_url', 'notes', 'is_published', 'created_at',
             'total_students', 'subject_count', 'results',
         ]
+        extra_kwargs = {
+            # Optional, and inferred from class_name when left blank so a
+            # session entered as plain text still lands on the right class.
+            'school_class': {'required': False, 'allow_null': True},
+        }
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # Keep the display name in step with the class it points at, so the
+        # list and the teacher scoping can never disagree.
+        school_class = attrs.get('school_class', getattr(self.instance, 'school_class', None))
+        if school_class and not attrs.get('class_name'):
+            attrs['class_name'] = school_class.name
+        return attrs
 
     def get_subject_count(self, obj):
         """How many distinct subjects this exam actually has marks for."""
@@ -207,7 +223,7 @@ class ExamListSerializer(serializers.ModelSerializer):
         # No student rows here: the public listing only advertises that a
         # session exists and where to get the sheet, not who passed.
         fields = [
-            'id', 'title', 'programme', 'programme_name', 'class_name', 'term',
+            'id', 'title', 'programme', 'programme_name', 'school_class', 'class_name', 'term',
             'academic_year', 'result_file_url', 'is_published', 'total_students',
             'created_at',
         ]

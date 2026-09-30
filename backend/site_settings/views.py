@@ -1,12 +1,12 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly
 from .models import SiteSettings
 from .serializers import SiteSettingsSerializer
 
 
 class SiteSettingsView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get(self, request):
         obj, _ = SiteSettings.objects.get_or_create(pk=1)

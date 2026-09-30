@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from accounts.permissions import IsAdminOrReadOnly
 from .models import ContactMessage
 from .serializers import ContactMessageSerializer, ContactMessageAdminSerializer
 
@@ -20,4 +21,4 @@ class ContactSubmitView(APIView):
 class ContactMessageAdminViewSet(viewsets.ModelViewSet):
     queryset = ContactMessage.objects.all()
     serializer_class = ContactMessageAdminSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminOrReadOnly]

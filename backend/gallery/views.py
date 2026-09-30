@@ -1,11 +1,11 @@
 from rest_framework import viewsets
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly
 from .models import Album, GalleryPhoto
 from .serializers import AlbumSerializer, AlbumListSerializer, GalleryPhotoSerializer
 
 
 class AlbumViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -22,4 +22,4 @@ class AlbumViewSet(viewsets.ModelViewSet):
 class GalleryPhotoViewSet(viewsets.ModelViewSet):
     queryset = GalleryPhoto.objects.all()
     serializer_class = GalleryPhotoSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]

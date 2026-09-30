@@ -1,12 +1,46 @@
-from rest_framework import status
+from rest_framework import status, serializers
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model
 from .serializers import AdminProfileSerializer, ChangePasswordSerializer
 import cloudinary.uploader
 
 User = get_user_model()
+
+
+class _RoleCheckedTokenSerializer(TokenObtainPairSerializer):
+    """Base for the two sign-in doors, so each one only opens for its own role."""
+
+    #: Subclasses set this to the role this door admits.
+    allowed_role = None
+    rejection = ''
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        if self.user.role != self.allowed_role:
+            raise serializers.ValidationError({'detail': self.rejection}, code='wrong_role')
+        return data
+
+
+class TeacherTokenObtainPairSerializer(_RoleCheckedTokenSerializer):
+    allowed_role = User.ROLE_TEACHER
+    rejection = 'This account is not a teacher account. Please use the admin login.'
+
+
+class AdminTokenObtainPairSerializer(_RoleCheckedTokenSerializer):
+    allowed_role = User.ROLE_ADMIN
+    rejection = 'This account is not an administrator account. Please use the teacher login.'
+
+
+class TeacherTokenObtainPairView(TokenObtainPairView):
+    serializer_class = TeacherTokenObtainPairSerializer
+
+
+class AdminTokenObtainPairView(TokenObtainPairView):
+    serializer_class = AdminTokenObtainPairSerializer
 
 
 class AdminProfileView(APIView):

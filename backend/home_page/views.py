@@ -1,12 +1,12 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly
 from .models import HomeHero
 from .serializers import HomeHeroSerializer
 
 
 class HomeHeroView(APIView):
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get(self, request):
         obj, _ = HomeHero.objects.get_or_create(pk=1)

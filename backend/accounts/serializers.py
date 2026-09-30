@@ -5,10 +5,14 @@ User = get_user_model()
 
 
 class AdminProfileSerializer(serializers.ModelSerializer):
+    # The dashboard reads this to decide which sign-in area a person belongs to.
+    role = serializers.CharField(read_only=True)
+    display_name = serializers.CharField(read_only=True)
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'phone']
-        read_only_fields = ['id', 'username']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'phone', 'role', 'display_name']
+        read_only_fields = ['id', 'username', 'role', 'display_name']
 
 
 class ChangePasswordSerializer(serializers.Serializer):
