@@ -94,7 +94,14 @@ class SchoolClass(models.Model):
 
 
 class ClassTeacher(models.Model):
-    """Which teacher is in charge of which class."""
+    """
+    Links a teacher to a class they teach in.
+
+    A teacher may teach in several classes, and a class may have several
+    teachers. Exactly one of them can be flagged as the *class teacher* - the
+    person in charge of the class - which the constraint below enforces at the
+    database level rather than trusting the interface.
+    """
 
     teacher = models.ForeignKey(
         'accounts.AdminUser',
@@ -102,19 +109,28 @@ class ClassTeacher(models.Model):
         related_name='class_assignments',
         limit_choices_to={'role': 'teacher'},
     )
-    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='teachers')
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='teacher_assignments')
+    # True only for the single teacher in charge of the class.
+    is_class_teacher = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['school_class__order', 'school_class__name']
-        # A teacher is either in charge of a class or not; no duplicates.
         constraints = [
             models.UniqueConstraint(fields=['teacher', 'school_class'], name='uniq_teacher_class'),
+            # One class teacher per class. The condition keeps this as a partial
+            # index, so several non-class teachers can share the same class.
+            models.UniqueConstraint(
+                fields=['school_class'],
+                condition=models.Q(is_class_teacher=True, is_active=True),
+                name='uniq_class_teacher_per_class',
+            ),
         ]
 
     def __str__(self):
-        return f"{self.teacher} → {self.school_class}"
+        role = 'class teacher' if self.is_class_teacher else 'teacher'
+        return f"{self.teacher} as {role} of {self.school_class}"
 
 
 class Exam(models.Model):
@@ -229,3 +245,56 @@ class SubjectMark(models.Model):
     def name(self):
         return self.subject.name if self.subject_id else (self.subject_name or "Subject")
 
+
+
+class TeachingSlot(models.Model):
+    """
+    One period on the timetable: a teacher teaching a subject to a class on a
+    given weekday between two times.
+
+    Kept separate from the class assignment on purpose: a teacher being in
+    charge of Grade 7 says nothing about *when* they teach it, and one teacher
+    often covers several subjects in the same class.
+    """
+
+    DAYS = [
+        (0, 'Monday'),
+        (1, 'Tuesday'),
+        (2, 'Wednesday'),
+        (3, 'Thursday'),
+        (4, 'Friday'),
+        (5, 'Saturday'),
+    ]
+
+    teacher = models.ForeignKey(
+        'accounts.AdminUser',
+        on_delete=models.CASCADE,
+        related_name='teaching_slots',
+        limit_choices_to={'role': 'teacher'},
+    )
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='teaching_slots')
+    # Free text rather than a foreign key, so a teacher can be timetabled for a
+    # subject that is taught but has not been added to the subjects list yet.
+    subject = models.CharField(max_length=200)
+    day_of_week = models.PositiveSmallIntegerField(choices=DAYS)
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    room = models.CharField(max_length=100, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['day_of_week', 'start_time', 'school_class__name']
+        verbose_name = 'Teaching slot'
+        verbose_name_plural = 'Teaching slots'
+        constraints = [
+            # Two periods cannot start together for the same teacher and class.
+            models.UniqueConstraint(
+                fields=['teacher', 'school_class', 'day_of_week', 'start_time'],
+                name='uniq_teacher_slot_start',
+            ),
+        ]
+
+    def __str__(self):
+        day = dict(self.DAYS).get(self.day_of_week, '?')
+        return f"{self.teacher} — {self.subject} — {day} {self.start_time:%H:%M}"

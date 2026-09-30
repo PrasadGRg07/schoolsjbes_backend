@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAdminUser
 
+from academics.models import ClassTeacher, SchoolClass
 from accounts.permissions import IsAdminOrReadOnly
 from .models import Teacher
 from .serializers import TeacherAccountSerializer, TeacherAdminSerializer, TeacherSerializer
@@ -82,4 +83,33 @@ class TeacherAccountViewSet(viewsets.ViewSet):
             profile.is_active = bool(request.data['publish_profile'])
             profile.save(update_fields=['is_active'])
 
+        if 'class_ids' in request.data:
+            wanted = request.data['class_ids']
+            if not isinstance(wanted, list):
+                return Response(
+                    {'class_ids': 'Send the class ids as a list.'},
+                    status=400,
+                )
+            known = set(
+                SchoolClass.objects.filter(pk__in=[c for c in wanted if c is not None])
+                .values_list('pk', flat=True)
+            )
+            unknown = [c for c in wanted if c not in known]
+            if unknown:
+                return Response({'class_ids': f'Unknown class ids: {unknown}'}, status=400)
+
+            # Only the classes that were ticked stay assigned; the rest are
+            # switched off rather than deleted, so the history survives.
+            ClassTeacher.objects.filter(teacher=account).exclude(
+                school_class_id__in=known
+            ).update(is_active=False)
+            ClassTeacher.objects.filter(
+                teacher=account, school_class_id__in=known
+            ).update(is_active=True)
+            for class_id in known:
+                ClassTeacher.objects.get_or_create(
+                    teacher=account, school_class_id=class_id, defaults={'is_active': True}
+                )
+
+        account.refresh_from_db()
         return Response(TeacherAccountSerializer(account).data)

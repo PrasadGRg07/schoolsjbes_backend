@@ -55,15 +55,36 @@ class TeacherAccountSerializer(serializers.ModelSerializer):
     profile_name = serializers.SerializerMethodField()
     profile_is_active = serializers.SerializerMethodField()
     profile_missing = serializers.SerializerMethodField()
+    class_ids = serializers.SerializerMethodField()
+    class_names = serializers.SerializerMethodField()
+    # The classes where this teacher is the single person in charge, which is
+    # not the same as every class they teach in.
+    class_teacher_class_ids = serializers.SerializerMethodField()
+    class_teacher_class_names = serializers.SerializerMethodField()
 
     class Meta:
         model = AdminUser
         fields = [
             'id', 'username', 'first_name', 'last_name', 'full_name', 'email',
             'is_active', 'last_login', 'has_profile', 'profile_id', 'profile_name',
-            'profile_is_active', 'profile_missing',
+            'profile_is_active', 'profile_missing', 'class_ids', 'class_names',
+            'class_teacher_class_ids', 'class_teacher_class_names',
         ]
         read_only_fields = fields
+
+    def get_class_ids(self, obj):
+        return [c.school_class_id for c in obj.class_assignments.filter(is_active=True)]
+
+    def get_class_names(self, obj):
+        return [c.school_class.name for c in obj.class_assignments.filter(is_active=True)]
+
+    def get_class_teacher_class_ids(self, obj):
+        rows = obj.class_assignments.filter(is_active=True, is_class_teacher=True)
+        return [r.school_class_id for r in rows]
+
+    def get_class_teacher_class_names(self, obj):
+        rows = obj.class_assignments.filter(is_active=True, is_class_teacher=True)
+        return [r.school_class.name for r in rows]
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.username

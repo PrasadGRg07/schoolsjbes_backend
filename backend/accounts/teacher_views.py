@@ -15,7 +15,9 @@ from teachers.models import Teacher
 def teacher_classes(user):
     """Active classes assigned to this teacher, in display order."""
     return (
-        SchoolClass.objects.filter(teachers__teacher=user, teachers__is_active=True)
+        SchoolClass.objects.filter(
+            teacher_assignments__teacher=user, teacher_assignments__is_active=True
+        )
         .select_related('programme')
         .distinct()
         .order_by('order', 'name')

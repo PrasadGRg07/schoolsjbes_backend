@@ -1,8 +1,9 @@
-from rest_framework import serializers, viewsets
+from django.db import models
+from rest_framework import serializers, viewsets, filters
 from accounts.permissions import IsAdminOrReadOnly, IsTeacherOrReadOnly
 from .models import (
     Programme, Subject, SubjectFile, AcademicDocument,
-    Exam, StudentResult, SubjectMark,
+    Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
 )
 from .serializers import (
     ProgrammeSerializer,
@@ -13,6 +14,8 @@ from .serializers import (
     ExamListSerializer,
     StudentResultSerializer,
     SubjectMarkSerializer,
+    SchoolClassSerializer,
+    TeachingSlotSerializer,
 )
 
 
@@ -236,3 +239,60 @@ class SubjectMarkViewSet(viewsets.ModelViewSet):
                 {'result': 'You can only add marks for a class you teach.'}
             )
         serializer.save()
+
+
+class SchoolClassViewSet(viewsets.ModelViewSet):
+    """
+    The class groups a teacher can be given charge of.
+
+    The timetable and the assignment picker both read from here. Anonymous
+    callers are limited to active classes, because these names are published on
+    the result sheets anyway.
+    """
+
+    serializer_class = SchoolClassSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'programme__name']
+    ordering_fields = ['order', 'name']
+
+    def get_queryset(self):
+        # The class-teacher row is read on every row, so fetch it up front
+        # instead of letting each row run its own query.
+        qs = (
+            SchoolClass.objects.select_related('programme')
+            .prefetch_related(
+                models.Prefetch(
+                    'teacher_assignments',
+                    queryset=ClassTeacher.objects.filter(is_class_teacher=True, is_active=True),
+                    to_attr='_prefetched_class_teacher',
+                )
+            )
+        )
+        if not (self.request.user.is_authenticated and self.request.user.is_staff):
+            qs = qs.filter(is_active=True)
+        return qs
+
+
+class TeachingSlotViewSet(viewsets.ModelViewSet):
+    """
+    The weekly timetable.
+
+    Everyone who is signed in may read it, but a teacher only ever sees their
+    own periods while an administrator sees the whole school. Only an
+    administrator builds or changes the timetable, because it is a school-wide
+    plan rather than something a teacher sets privately.
+    """
+
+    serializer_class = TeachingSlotSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['subject', 'teacher__username', 'teacher__first_name', 'school_class__name']
+    ordering_fields = ['day_of_week', 'start_time', 'end_time']
+
+    def get_queryset(self):
+        qs = TeachingSlot.objects.select_related('teacher', 'school_class', 'school_class__programme')
+        user = self.request.user
+        if not (user.is_authenticated and user.is_staff):
+            qs = qs.filter(teacher=user)
+        return qs

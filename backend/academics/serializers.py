@@ -2,8 +2,9 @@ from rest_framework import serializers
 from config.html import sanitize_html
 from .models import (
     Programme, Subject, SubjectFile, AcademicDocument,
-    Exam, StudentResult, SubjectMark,
+    Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
 )
+from accounts.models import AdminUser
 
 
 class SubjectFileSerializer(serializers.ModelSerializer):
@@ -227,3 +228,129 @@ class ExamListSerializer(serializers.ModelSerializer):
             'academic_year', 'result_file_url', 'is_published', 'total_students',
             'created_at',
         ]
+
+
+class SchoolClassSerializer(serializers.ModelSerializer):
+    """
+    A class group, with the names an administrator needs to pick one.
+
+    ``class_teacher`` is writable so the admin can put exactly one teacher in
+    charge of the class. Writing it moves that person into the class's teacher
+    list and hands them the class-teacher role, retiring whoever held it before.
+    """
+
+    programme_name = serializers.CharField(source='programme.name', read_only=True, default=None)
+    class_teacher = serializers.PrimaryKeyRelatedField(
+        queryset=AdminUser.objects.filter(role='teacher', is_active=True),
+        allow_null=True,
+        required=False,
+        help_text='The single teacher in charge of this class.',
+    )
+    class_teacher_name = serializers.SerializerMethodField()
+    teacher_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SchoolClass
+        fields = [
+            'id', 'name', 'programme', 'programme_name', 'is_active', 'order',
+            'class_teacher', 'class_teacher_name', 'teacher_count',
+        ]
+
+    def get_class_teacher_name(self, obj):
+        row = self._class_teacher_row(obj)
+        return row.teacher.display_name if row else None
+
+    def get_teacher_count(self, obj):
+        return obj.teacher_assignments.filter(is_active=True).count()
+
+    def _class_teacher_row(self, school_class):
+        # A Prefetch with to_attr hands back a list, and it is a snapshot taken
+        # before any write, so it is dropped by _apply_class_teacher.
+        prefetched = getattr(school_class, '_prefetched_class_teacher', None)
+        if prefetched is not None:
+            return prefetched[0] if prefetched else None
+        return school_class.teacher_assignments.filter(is_class_teacher=True, is_active=True).first()
+
+    def _apply_class_teacher(self, school_class, teacher):
+        """
+        Point the class at one teacher. The previous holder keeps teaching the
+        class but loses the class-teacher role, which is what "only one" means.
+        """
+        ClassTeacher.objects.filter(
+            school_class=school_class, is_class_teacher=True, is_active=True
+        ).update(is_class_teacher=False)
+        if teacher is not None:
+            ClassTeacher.objects.update_or_create(
+                teacher=teacher,
+                school_class=school_class,
+                defaults={'is_active': True, 'is_class_teacher': True},
+            )
+        # Force a fresh read so the response reflects the change just made.
+        school_class._prefetched_class_teacher = None
+
+    def create(self, validated_data):
+        teacher = validated_data.pop('class_teacher', None)
+        school_class = super().create(validated_data)
+        self._apply_class_teacher(school_class, teacher)
+        return school_class
+
+    def update(self, instance, validated_data):
+        # Only act when the admin actually sent the field, so a partial update
+        # of just the name never silently clears the class teacher.
+        if 'class_teacher' in self.initial_data:
+            teacher = validated_data.pop('class_teacher', None)
+        else:
+            teacher = None
+        school_class = super().update(instance, validated_data)
+        if 'class_teacher' in self.initial_data:
+            self._apply_class_teacher(school_class, teacher)
+        return school_class
+
+
+class TeachingSlotSerializer(serializers.ModelSerializer):
+    teacher_username = serializers.CharField(source='teacher.username', read_only=True)
+    teacher_name = serializers.SerializerMethodField()
+    class_name = serializers.CharField(source='school_class.name', read_only=True)
+    day_label = serializers.CharField(source='get_day_of_week_display', read_only=True)
+
+    class Meta:
+        model = TeachingSlot
+        fields = [
+            'id', 'teacher', 'teacher_username', 'teacher_name', 'school_class', 'class_name',
+            'subject', 'day_of_week', 'day_label', 'start_time', 'end_time', 'room',
+        ]
+        # Only an administrator writes to this, and they have to say which
+        # teacher the period belongs to, so the field is a normal input.
+        extra_kwargs = {'teacher': {'required': True}}
+
+    def get_teacher_name(self, obj):
+        return obj.teacher.get_full_name() or obj.teacher.username
+
+    def validate_subject(self, value):
+        if not value.strip():
+            raise serializers.ValidationError('A subject is required.')
+        return value.strip()
+
+    def validate(self, attrs):
+        start = attrs.get('start_time', getattr(self.instance, 'start_time', None))
+        end = attrs.get('end_time', getattr(self.instance, 'end_time', None))
+        if start and end and end <= start:
+            raise serializers.ValidationError(
+                {'end_time': 'The end time must be after the start time.'}
+            )
+        # A teacher cannot be in two rooms at once. Class clashes are allowed,
+        # because the timetable records what was planned, not what happened.
+        clash = TeachingSlot.objects.filter(
+            teacher=attrs.get('teacher', getattr(self.instance, 'teacher', None)),
+            day_of_week=attrs.get('day_of_week', getattr(self.instance, 'day_of_week', None)),
+            start_time=start,
+        ).exclude(pk=self.instance.pk) if self.instance else TeachingSlot.objects.filter(
+            teacher=attrs.get('teacher'),
+            day_of_week=attrs.get('day_of_week'),
+            start_time=start,
+        )
+        if clash.exists():
+            raise serializers.ValidationError(
+                'This teacher already has a period starting at that time on that day.'
+            )
+        return attrs
