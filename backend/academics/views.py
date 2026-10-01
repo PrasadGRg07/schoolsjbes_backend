@@ -38,9 +38,10 @@ class ProgrammeViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
         return self.apply_published_only(qs)
 
 
-class SubjectViewSet(viewsets.ModelViewSet):
+class SubjectViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
     """Subjects, optionally narrowed to one programme with ?programme=<id>."""
 
+    public_filter = {'is_active': True, 'programme__is_active': True}
     serializer_class = SubjectSerializer
     permission_classes = [IsAdminOrReadOnly]
 
