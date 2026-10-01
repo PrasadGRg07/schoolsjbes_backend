@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 
 from config.models import CoverCropMixin
 
@@ -91,6 +92,24 @@ class SchoolClass(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def class_teacher(self):
+        """
+        The single teacher in charge of this class, or None.
+
+        The relationship really lives on ClassTeacher, so this reads it instead
+        of storing it twice. It exists because the API has to report the chosen
+        teacher as a value the admin form can compare against - without it the
+        dropdown has nothing to match and springs back to blank.
+        """
+        rows = getattr(self, '_prefetched_assignments', None)
+        if rows is None:
+            rows = self.teacher_assignments.filter(is_active=True).select_related('teacher')
+        for row in rows:
+            if row.is_class_teacher:
+                return row.teacher
+        return None
 
 
 class ClassTeacher(models.Model):
@@ -264,6 +283,7 @@ class TeachingSlot(models.Model):
         (3, 'Thursday'),
         (4, 'Friday'),
         (5, 'Saturday'),
+        (6, 'Sunday'),
     ]
 
     teacher = models.ForeignKey(
@@ -273,9 +293,11 @@ class TeachingSlot(models.Model):
         limit_choices_to={'role': 'teacher'},
     )
     school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='teaching_slots')
-    # Free text rather than a foreign key, so a teacher can be timetabled for a
-    # subject that is taught but has not been added to the subjects list yet.
-    subject = models.CharField(max_length=200)
+    # A real link to the subject list, so the timetable, the results marks and
+    # the subjects page all name the same thing. PROTECT rather than CASCADE:
+    # deleting a subject that is on the timetable is refused with a clear message
+    # instead of quietly taking the periods with it.
+    subject = models.ForeignKey(Subject, on_delete=models.PROTECT, related_name='timetable_slots')
     day_of_week = models.PositiveSmallIntegerField(choices=DAYS)
     start_time = models.TimeField()
     end_time = models.TimeField()
@@ -298,3 +320,79 @@ class TeachingSlot(models.Model):
     def __str__(self):
         day = dict(self.DAYS).get(self.day_of_week, '?')
         return f"{self.teacher} — {self.subject} — {day} {self.start_time:%H:%M}"
+
+
+class Student(models.Model):
+    """
+    A pupil enrolled in a class.
+
+    Results used to know a student only as typed-in name and roll number, which
+    meant the same child could be spelled two ways and no one could look up
+    their history. This is the roster that attendance and marks both hang off.
+    """
+
+    school_class = models.ForeignKey(SchoolClass, on_delete=models.CASCADE, related_name='students')
+    name = models.CharField(max_length=200)
+    roll_number = models.CharField(max_length=50, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['school_class__name', 'roll_number', 'name']
+        verbose_name = 'Student'
+        verbose_name_plural = 'Students'
+        constraints = [
+            # A roll number identifies one child within a class. Blank roll
+            # numbers are left free, because plenty of classes have them and two
+            # blanks in the same class are not the same child.
+            models.UniqueConstraint(
+                fields=['school_class', 'roll_number'],
+                condition=~Q(roll_number=''),
+                name='uniq_student_roll_per_class',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.school_class})'
+
+
+class Attendance(models.Model):
+    """
+    Whether a student was in school on one date.
+
+    One row per student per day, so the timetable calendar can simply ask which
+    dates have attendance and colour them. Taking it per period would be more
+    precise but needs a second key; that can be added without losing these rows.
+    """
+
+    STATUS = [
+        ('present', 'Present'),
+        ('absent', 'Absent'),
+        ('late', 'Late'),
+        ('excused', 'Excused'),
+    ]
+
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='attendance_records')
+    date = models.DateField()
+    status = models.CharField(max_length=10, choices=STATUS, default='present')
+    note = models.CharField(max_length=200, blank=True)
+    marked_by = models.ForeignKey(
+        'accounts.AdminUser', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='attendance_marked',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['date', 'student__roll_number', 'student__name']
+        verbose_name = 'Attendance'
+        verbose_name_plural = 'Attendance'
+        constraints = [
+            # Marking the same student twice in a day updates the row instead
+            # of piling up duplicates that would double-count the register.
+            models.UniqueConstraint(fields=['student', 'date'], name='uniq_attendance_student_date'),
+        ]
+
+    def __str__(self):
+        return f'{self.student} on {self.date}: {self.get_status_display()}'

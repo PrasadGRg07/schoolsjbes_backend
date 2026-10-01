@@ -1,9 +1,14 @@
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 from rest_framework import serializers, viewsets, filters
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.decorators import action
 from accounts.permissions import IsAdminOrReadOnly, IsTeacherOrReadOnly
 from .models import (
     Programme, Subject, SubjectFile, AcademicDocument,
     Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
+    Student, Attendance,
 )
 from .serializers import (
     ProgrammeSerializer,
@@ -16,6 +21,8 @@ from .serializers import (
     SubjectMarkSerializer,
     SchoolClassSerializer,
     TeachingSlotSerializer,
+    StudentSerializer,
+    AttendanceSerializer,
 )
 
 
@@ -44,6 +51,24 @@ class SubjectViewSet(viewsets.ModelViewSet):
         if programme:
             qs = qs.filter(programme_id=programme)
         return qs
+
+    def destroy(self, request, *args, **kwargs):
+        # TeachingSlot protects the subject, so a subject on the timetable is
+        # refused with an explanation rather than a database error.
+        subject = self.get_object()
+        periods = subject.timetable_slots.count()
+        if periods:
+            return Response(
+                {
+                    'detail': (
+                        f'"{subject.name}" is used in {periods} timetable '
+                        f'period{"s" if periods != 1 else ""}. Remove those '
+                        f'periods first, or hide the subject instead.'
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         # Default a new subject to the bottom of its programme's list.
@@ -261,11 +286,18 @@ class SchoolClassViewSet(viewsets.ModelViewSet):
         # instead of letting each row run its own query.
         qs = (
             SchoolClass.objects.select_related('programme')
+            # Counted in the database rather than in Python, so a page of
+            # classes stays a handful of queries instead of one per class.
+            .annotate(
+                active_student_count=models.Count(
+                    'students', filter=models.Q(students__is_active=True), distinct=True,
+                )
+            )
             .prefetch_related(
                 models.Prefetch(
                     'teacher_assignments',
-                    queryset=ClassTeacher.objects.filter(is_class_teacher=True, is_active=True),
-                    to_attr='_prefetched_class_teacher',
+                    queryset=ClassTeacher.objects.filter(is_active=True).select_related('teacher'),
+                    to_attr='_prefetched_assignments',
                 )
             )
         )
@@ -287,7 +319,7 @@ class TeachingSlotViewSet(viewsets.ModelViewSet):
     serializer_class = TeachingSlotSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['subject', 'teacher__username', 'teacher__first_name', 'school_class__name']
+    search_fields = ['subject__name', 'teacher__username', 'teacher__first_name', 'school_class__name']
     ordering_fields = ['day_of_week', 'start_time', 'end_time']
 
     def get_queryset(self):
@@ -296,3 +328,250 @@ class TeachingSlotViewSet(viewsets.ModelViewSet):
         if not (user.is_authenticated and user.is_staff):
             qs = qs.filter(teacher=user)
         return qs
+
+
+def teacher_class_ids(user):
+    """The classes a teacher currently works in, class teacher or not."""
+    return list(
+        ClassTeacher.objects
+        .filter(teacher=user, is_active=True)
+        .values_list('school_class_id', flat=True)
+    )
+
+
+class StudentViewSet(viewsets.ModelViewSet):
+    """
+    The class roster.
+
+    A teacher reads the students of the classes they are assigned to, because
+    taking attendance needs to know who is in the room. Writing is an
+    administrator's job: the roster is the school's record of who is enrolled.
+    """
+
+    serializer_class = StudentSerializer
+    permission_classes = [IsTeacherOrReadOnly]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'roll_number']
+    ordering_fields = ['roll_number', 'name']
+
+    def get_queryset(self):
+        qs = Student.objects.select_related('school_class')
+        user = self.request.user
+        if user.is_authenticated and not user.is_staff:
+            qs = qs.filter(school_class_id__in=teacher_class_ids(user))
+        school_class = self.request.query_params.get('school_class')
+        if school_class:
+            qs = qs.filter(school_class_id=school_class)
+        if self.request.query_params.get('include_inactive') != '1':
+            qs = qs.filter(is_active=True)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    def get_permissions(self):
+        # The read-only permission classes are not enough here: a teacher must
+        # not be able to enroll or remove pupils by any route.
+        if self.action in ('create', 'update', 'partial_update', 'destroy'):
+            return [IsAdminOrReadOnly()]
+        return super().get_permissions()
+
+
+class AttendanceViewSet(viewsets.ModelViewSet):
+    """
+    Daily attendance.
+
+    Reading is scoped to the teacher's own classes. Marking is allowed for any
+    class the teacher is assigned to, because taking the register is part of
+    their job, but the roster itself stays under the administrator's control.
+    """
+
+    serializer_class = AttendanceSerializer
+    permission_classes = [IsTeacherOrReadOnly]
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['date']
+
+    def get_queryset(self):
+        qs = Attendance.objects.select_related(
+            'student', 'student__school_class', 'marked_by'
+        )
+        user = self.request.user
+        if user.is_authenticated and not user.is_staff:
+            qs = qs.filter(student__school_class_id__in=teacher_class_ids(user))
+        school_class = self.request.query_params.get('school_class')
+        if school_class:
+            qs = qs.filter(student__school_class_id=school_class)
+        date = self.request.query_params.get('date')
+        if date:
+            qs = qs.filter(date=date)
+        return qs
+
+    def _may_mark(self, school_class_id):
+        user = self.request.user
+        if not (user.is_authenticated and user.is_staff):
+            return school_class_id in teacher_class_ids(user)
+        return True
+
+    @action(detail=False, methods=['get'])
+    def sheet(self, request):
+        """
+        The register for one class on one date: every student with the status
+        already recorded, so the grid can show Present next to Absent.
+        """
+        school_class = request.query_params.get('school_class')
+        date = request.query_params.get('date')
+        if not school_class or not date:
+            return Response(
+                {'detail': 'Both school_class and date are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not self._may_mark(int(school_class)):
+            return Response(
+                {'detail': 'You are not assigned to this class.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        students = Student.objects.filter(
+            school_class_id=school_class, is_active=True
+        ).select_related('school_class')
+        recorded = {
+            row.student_id: row
+            for row in Attendance.objects.filter(
+                student__school_class_id=school_class, date=date
+            ).select_related('marked_by')
+        }
+        def register_row(student):
+            """One line of the register: the student plus what was recorded."""
+            row = recorded.get(student.id)
+            marker = row.marked_by if row else None
+            return {
+                'id': student.id,
+                'name': student.name,
+                'roll_number': student.roll_number,
+                'status': row.status if row else '',
+                'note': row.note if row else '',
+                'marked_by': (
+                    (marker.get_full_name() or marker.username) if marker else ''
+                ),
+            }
+
+        return Response({
+            'school_class': int(school_class),
+            'date': date,
+            'is_holiday': timezone.datetime.strptime(date, '%Y-%m-%d').weekday() == 5,
+            'students': [register_row(student) for student in students],
+        })
+
+    @action(detail=False, methods=['post'])
+    def mark(self, request):
+        """
+        Save a whole register in one go.
+
+        Re-marking a student updates that day rather than adding a second row,
+        so a teacher who corrects a mistake does not double-count anyone.
+        """
+        school_class = request.data.get('school_class')
+        date = request.data.get('date')
+        entries = request.data.get('entries') or []
+        if not school_class or not date:
+            return Response(
+                {'detail': 'Both school_class and date are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not self._may_mark(int(school_class)):
+            return Response(
+                {'detail': 'You are not assigned to this class.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            parsed_date = timezone.datetime.strptime(date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'date': 'Use the format YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if parsed_date.weekday() == 5:
+            return Response(
+                {'date': 'Saturday is a holiday, so attendance is not taken.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        students = {
+            student.id: student
+            for student in Student.objects.filter(
+                school_class_id=school_class, is_active=True
+            ).select_related('school_class')
+        }
+        # Check the whole register before writing any of it. Saving first and
+        # complaining afterwards would leave a half-marked day behind, and the
+        # teacher would have no way of telling which half landed.
+        unknown = []
+        usable = []
+        for entry in entries:
+            student_id = entry.get('student')
+            status_value = entry.get('status')
+            if student_id not in students:
+                if student_id is not None:
+                    unknown.append(student_id)
+                continue
+            if status_value in dict(Attendance.STATUS):
+                usable.append((student_id, status_value, entry.get('note') or ''))
+        if unknown:
+            return Response(
+                {'detail': f'Some students are not in this class: {unknown}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        marker = request.user if request.user.is_authenticated else None
+        with transaction.atomic():
+            for student_id, status_value, note in usable:
+                Attendance.objects.update_or_create(
+                    student_id=student_id,
+                    date=parsed_date,
+                    defaults={
+                        'status': status_value,
+                        'note': note[:200],
+                        'marked_by': marker,
+                    },
+                )
+        return Response({
+            'saved': len(usable), 'date': date, 'school_class': int(school_class),
+        })
+
+    @action(detail=False, methods=['get'])
+    def calendar(self, request):
+        """
+        Which dates in a range have attendance, so the timetable calendar can
+        colour them. Counts come back with the dates so the day can also show
+        how many were in.
+        """
+        start = request.query_params.get('from')
+        end = request.query_params.get('to')
+        if not start or not end:
+            return Response(
+                {'detail': 'Both from and to are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        rows = (
+            self.get_queryset()
+            .filter(date__gte=start, date__lte=end)
+            .values('date')
+            .annotate(
+                present=models.Count('id', filter=models.Q(status='present')),
+                absent=models.Count('id', filter=models.Q(status='absent')),
+                total=models.Count('id'),
+            )
+            .order_by('date')
+        )
+        return Response({
+            'from': start,
+            'to': end,
+            'days': [
+                {
+                    'date': row['date'].isoformat(),
+                    'present': row['present'],
+                    'absent': row['absent'],
+                    'total': row['total'],
+                }
+                for row in rows
+            ],
+        })

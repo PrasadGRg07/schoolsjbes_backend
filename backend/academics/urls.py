@@ -10,6 +10,8 @@ from .views import (
     ExamViewSet,
     StudentResultViewSet,
     SubjectMarkViewSet,
+    StudentViewSet,
+    AttendanceViewSet,
 )
 
 router = DefaultRouter()
@@ -22,5 +24,7 @@ router.register('results', StudentResultViewSet, basename='student-result')
 router.register('marks', SubjectMarkViewSet, basename='subject-mark')
 router.register('classes', SchoolClassViewSet, basename='school-class')
 router.register('timetable', TeachingSlotViewSet, basename='teaching-slot')
+router.register('students', StudentViewSet, basename='student')
+router.register('attendance', AttendanceViewSet, basename='attendance')
 
 urlpatterns = [path('', include(router.urls))]

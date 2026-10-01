@@ -3,6 +3,7 @@ from config.html import sanitize_html
 from .models import (
     Programme, Subject, SubjectFile, AcademicDocument,
     Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
+    Student, Attendance,
 )
 from accounts.models import AdminUser
 
@@ -248,28 +249,29 @@ class SchoolClassSerializer(serializers.ModelSerializer):
     )
     class_teacher_name = serializers.SerializerMethodField()
     teacher_count = serializers.SerializerMethodField()
+    student_count = serializers.SerializerMethodField()
 
     class Meta:
         model = SchoolClass
         fields = [
             'id', 'name', 'programme', 'programme_name', 'is_active', 'order',
-            'class_teacher', 'class_teacher_name', 'teacher_count',
+            'class_teacher', 'class_teacher_name', 'teacher_count', 'student_count',
         ]
 
+    def get_student_count(self, obj):
+        if not hasattr(obj, 'active_student_count'):
+            return 0
+        return obj.active_student_count
+
     def get_class_teacher_name(self, obj):
-        row = self._class_teacher_row(obj)
-        return row.teacher.display_name if row else None
+        teacher = obj.class_teacher
+        return teacher.display_name if teacher else None
 
     def get_teacher_count(self, obj):
+        rows = getattr(obj, '_prefetched_assignments', None)
+        if rows is not None:
+            return len(rows)
         return obj.teacher_assignments.filter(is_active=True).count()
-
-    def _class_teacher_row(self, school_class):
-        # A Prefetch with to_attr hands back a list, and it is a snapshot taken
-        # before any write, so it is dropped by _apply_class_teacher.
-        prefetched = getattr(school_class, '_prefetched_class_teacher', None)
-        if prefetched is not None:
-            return prefetched[0] if prefetched else None
-        return school_class.teacher_assignments.filter(is_class_teacher=True, is_active=True).first()
 
     def _apply_class_teacher(self, school_class, teacher):
         """
@@ -285,8 +287,9 @@ class SchoolClassSerializer(serializers.ModelSerializer):
                 school_class=school_class,
                 defaults={'is_active': True, 'is_class_teacher': True},
             )
-        # Force a fresh read so the response reflects the change just made.
-        school_class._prefetched_class_teacher = None
+        # The prefetched rows are a snapshot from before the write, so drop them
+        # to make the response reflect what was just changed.
+        school_class._prefetched_assignments = None
 
     def create(self, validated_data):
         teacher = validated_data.pop('class_teacher', None)
@@ -312,12 +315,16 @@ class TeachingSlotSerializer(serializers.ModelSerializer):
     teacher_name = serializers.SerializerMethodField()
     class_name = serializers.CharField(source='school_class.name', read_only=True)
     day_label = serializers.CharField(source='get_day_of_week_display', read_only=True)
+    subject_name = serializers.CharField(source='subject.name', read_only=True)
+    subject_code = serializers.CharField(source='subject.code', read_only=True)
+    programme_name = serializers.SerializerMethodField()
 
     class Meta:
         model = TeachingSlot
         fields = [
             'id', 'teacher', 'teacher_username', 'teacher_name', 'school_class', 'class_name',
-            'subject', 'day_of_week', 'day_label', 'start_time', 'end_time', 'room',
+            'subject', 'subject_name', 'subject_code', 'programme_name',
+            'day_of_week', 'day_label', 'start_time', 'end_time', 'room',
         ]
         # Only an administrator writes to this, and they have to say which
         # teacher the period belongs to, so the field is a normal input.
@@ -326,10 +333,50 @@ class TeachingSlotSerializer(serializers.ModelSerializer):
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username
 
+    def get_programme_name(self, obj):
+        programme = obj.subject.programme
+        return programme.name if programme else None
+
+    def _record_teaching(self, slot):
+        """
+        Make sure the teacher counts as teaching that class.
+
+        A period is the one thing that proves a teacher works in a class, and the
+        dashboard, the class list and the result scoping all read the class
+        assignment rather than the timetable. Without this a teacher could be
+        timetabled all week and still see an empty portal.
+
+        The row is created with is_class_teacher left alone: being timetabled
+        somewhere never makes someone the class teacher, and never demotes the
+        one who already is.
+        """
+        if slot.teacher_id and slot.school_class_id:
+            ClassTeacher.objects.update_or_create(
+                teacher_id=slot.teacher_id,
+                school_class_id=slot.school_class_id,
+                # is_class_teacher is deliberately absent, so an existing row
+                # keeps whatever role it already had.
+                defaults={'is_active': True},
+            )
+
+    def create(self, validated_data):
+        slot = super().create(validated_data)
+        self._record_teaching(slot)
+        return slot
+
+    def update(self, instance, validated_data):
+        slot = super().update(instance, validated_data)
+        self._record_teaching(slot)
+        return slot
+
     def validate_subject(self, value):
-        if not value.strip():
-            raise serializers.ValidationError('A subject is required.')
-        return value.strip()
+        # A retired subject should not be schedulable, even though the row stays
+        # on old periods.
+        if not value.is_active:
+            raise serializers.ValidationError(
+                f'"{value.name}" is hidden. Make it active before scheduling it.'
+            )
+        return value
 
     def validate(self, attrs):
         start = attrs.get('start_time', getattr(self.instance, 'start_time', None))
@@ -352,5 +399,72 @@ class TeachingSlotSerializer(serializers.ModelSerializer):
         if clash.exists():
             raise serializers.ValidationError(
                 'This teacher already has a period starting at that time on that day.'
+            )
+        return attrs
+
+
+class StudentSerializer(serializers.ModelSerializer):
+    class_name = serializers.CharField(source='school_class.name', read_only=True)
+
+    class Meta:
+        model = Student
+        fields = ['id', 'school_class', 'class_name', 'name', 'roll_number', 'is_active']
+        # The unique constraint on (class, roll) makes DRF build a validator that
+        # insists the roll is always supplied, which is wrong: plenty of pupils
+        # have no roll number yet, and validate() below already reports a
+        # duplicate properly. The database constraint still guards the data.
+        validators = []
+        extra_kwargs = {
+            'school_class': {'required': True},
+            'roll_number': {'required': False, 'allow_blank': True},
+        }
+
+    def validate(self, attrs):
+        school_class = attrs.get('school_class', getattr(self.instance, 'school_class', None))
+        roll = (attrs.get('roll_number', getattr(self.instance, 'roll_number', '')) or '').strip()
+        if roll:
+            clash = Student.objects.filter(
+                school_class=school_class, roll_number=roll
+            ).exclude(pk=self.instance.pk) if self.instance else Student.objects.filter(
+                school_class=school_class, roll_number=roll
+            )
+            if clash.exists():
+                raise serializers.ValidationError(
+                    {'roll_number': f'Roll number {roll} is already used in {school_class.name}.'}
+                )
+        if not (attrs.get('name', getattr(self.instance, 'name', '')) or '').strip():
+            raise serializers.ValidationError({'name': 'A student name is required.'})
+        return attrs
+
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='student.name', read_only=True)
+    roll_number = serializers.CharField(source='student.roll_number', read_only=True)
+    class_name = serializers.CharField(source='student.school_class.name', read_only=True)
+    marked_by_name = serializers.CharField(source='marked_by.get_full_name', read_only=True, default=None)
+
+    class Meta:
+        model = Attendance
+        fields = ['id', 'student', 'student_name', 'roll_number', 'class_name', 'date',
+                  'status', 'note', 'marked_by', 'marked_by_name']
+        # Marking is a bulk operation keyed on the student, so student and date
+        # always arrive in the payload.
+        extra_kwargs = {
+            'student': {'required': True},
+            'date': {'required': True},
+            'marked_by': {'required': False, 'read_only': True},
+        }
+
+    def validate(self, attrs):
+        student = attrs.get('student', getattr(self.instance, 'student', None))
+        if student and not student.is_active:
+            raise serializers.ValidationError(
+                {'student': f'{student.name} has left the class and cannot be marked.'}
+            )
+        # Saturday is the school's holiday, so nobody can be present.
+        date = attrs.get('date', getattr(self.instance, 'date', None))
+        if date and date.weekday() == 5:
+            raise serializers.ValidationError(
+                {'date': 'Saturday is a holiday, so attendance is not taken.'}
             )
         return attrs
