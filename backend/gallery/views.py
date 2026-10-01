@@ -1,10 +1,11 @@
 from rest_framework import viewsets
-from accounts.permissions import IsAdminOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly, PublishedOnlyMixin
 from .models import Album, GalleryPhoto
 from .serializers import AlbumSerializer, AlbumListSerializer, GalleryPhotoSerializer
 
 
-class AlbumViewSet(viewsets.ModelViewSet):
+class AlbumViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    public_filter = {'is_published': True}
     permission_classes = [IsAdminOrReadOnly]
 
     def get_serializer_class(self):
@@ -16,7 +17,7 @@ class AlbumViewSet(viewsets.ModelViewSet):
         qs = Album.objects.prefetch_related('photos').all()
         if not self.request.user.is_authenticated:
             qs = qs.filter(is_published=True)
-        return qs
+        return self.apply_published_only(qs)
 
 
 class GalleryPhotoViewSet(viewsets.ModelViewSet):

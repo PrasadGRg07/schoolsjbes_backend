@@ -4,7 +4,7 @@ from rest_framework import serializers, viewsets, filters
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
-from accounts.permissions import IsAdminOrReadOnly, IsTeacherOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly, IsTeacherOrReadOnly, PublishedOnlyMixin
 from .models import (
     Programme, Subject, SubjectFile, AcademicDocument,
     Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
@@ -26,7 +26,8 @@ from .serializers import (
 )
 
 
-class ProgrammeViewSet(viewsets.ModelViewSet):
+class ProgrammeViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    public_filter = {'is_active': True}
     serializer_class = ProgrammeSerializer
     permission_classes = [IsAdminOrReadOnly]
 
@@ -34,7 +35,7 @@ class ProgrammeViewSet(viewsets.ModelViewSet):
         qs = Programme.objects.all()
         if not self.request.user.is_authenticated:
             qs = qs.filter(is_active=True)
-        return qs
+        return self.apply_published_only(qs)
 
 
 class SubjectViewSet(viewsets.ModelViewSet):
@@ -50,7 +51,7 @@ class SubjectViewSet(viewsets.ModelViewSet):
         programme = self.request.query_params.get('programme')
         if programme:
             qs = qs.filter(programme_id=programme)
-        return qs
+        return self.apply_published_only(qs)
 
     def destroy(self, request, *args, **kwargs):
         # TeachingSlot protects the subject, so a subject on the timetable is
@@ -107,7 +108,7 @@ class AcademicDocumentViewSet(viewsets.ModelViewSet):
     queryset = AcademicDocument.objects.all()
 
 
-class ExamViewSet(viewsets.ModelViewSet):
+class ExamViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
     """
     Result sessions. Both the admin and the public get the summary shape on
     list and retrieve, so opening the tab does not pull every student mark for
@@ -116,6 +117,7 @@ class ExamViewSet(viewsets.ModelViewSet):
     result lookup, which requires a roll number or name when called publicly.
     """
 
+    public_filter = {'is_published': True, 'programme__is_active': True}
     permission_classes = [IsAdminOrReadOnly]
 
     def get_serializer_class(self):
@@ -133,6 +135,7 @@ class ExamViewSet(viewsets.ModelViewSet):
             qs = qs.filter(is_published=True).exclude(
                 programme__is_active=False,
             )
+        qs = self.apply_published_only(qs)
         programme = self.request.query_params.get('programme')
         if programme:
             if programme in ('none', 'null'):
@@ -148,7 +151,8 @@ class ExamViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class StudentResultViewSet(viewsets.ModelViewSet):
+class StudentResultViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    public_filter = {'exam__is_published': True, 'exam__programme__is_active': True}
     """
     Students within an exam, narrowed with ?exam=<id>.
 
@@ -178,6 +182,7 @@ class StudentResultViewSet(viewsets.ModelViewSet):
         qs = StudentResult.objects.select_related('exam', 'exam__programme').prefetch_related(
             'marks__subject',
         )
+        qs = self.apply_published_only(qs)
         exam = self.request.query_params.get('exam')
         if exam:
             qs = qs.filter(exam_id=exam)
@@ -215,7 +220,8 @@ class StudentResultViewSet(viewsets.ModelViewSet):
             serializer.save(order=(last.order + 1) if last else 1)
 
 
-class SubjectMarkViewSet(viewsets.ModelViewSet):
+class SubjectMarkViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    public_filter = {'result__exam__is_published': True}
     """
     Per-subject marks, narrowed with ?result=<id>.
 
@@ -241,6 +247,7 @@ class SubjectMarkViewSet(viewsets.ModelViewSet):
         qs = SubjectMark.objects.select_related('subject', 'result', 'result__exam')
         if not self.request.user.is_authenticated:
             qs = qs.filter(result__exam__is_published=True)
+        qs = self.apply_published_only(qs)
         result = self.request.query_params.get('result')
         if result:
             qs = qs.filter(result_id=result)

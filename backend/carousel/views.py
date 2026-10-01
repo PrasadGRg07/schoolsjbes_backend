@@ -1,10 +1,11 @@
 from rest_framework import viewsets, mixins
-from accounts.permissions import IsAdminOrReadOnly
+from accounts.permissions import IsAdminOrReadOnly, PublishedOnlyMixin
 from .models import TextSlide, ImageSlide
 from .serializers import TextSlideSerializer, ImageSlideSerializer
 
 
-class TextSlideViewSet(viewsets.ModelViewSet):
+class TextSlideViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    public_filter = {'is_enabled': True}
     serializer_class = TextSlideSerializer
     permission_classes = [IsAdminOrReadOnly]
 
@@ -12,10 +13,11 @@ class TextSlideViewSet(viewsets.ModelViewSet):
         qs = TextSlide.objects.all()
         if not self.request.user.is_authenticated:
             qs = qs.filter(is_enabled=True)
-        return qs
+        return self.apply_published_only(qs)
 
 
-class ImageSlideViewSet(viewsets.ModelViewSet):
+class ImageSlideViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    public_filter = {'is_enabled': True}
     serializer_class = ImageSlideSerializer
     permission_classes = [IsAdminOrReadOnly]
 
@@ -23,4 +25,4 @@ class ImageSlideViewSet(viewsets.ModelViewSet):
         qs = ImageSlide.objects.all()
         if not self.request.user.is_authenticated:
             qs = qs.filter(is_enabled=True)
-        return qs
+        return self.apply_published_only(qs)

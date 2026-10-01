@@ -39,3 +39,30 @@ class IsTeacherOrReadOnly(BasePermission):
             return True
         user = request.user
         return bool(user and user.is_authenticated and (user.is_staff or getattr(user, 'is_teacher', False)))
+
+
+class PublishedOnlyMixin:
+    """
+    Lets a caller insist on the public view of a list, even when signed in.
+
+    The admin area and the public pages share one endpoint, and the browser
+    sends its saved session with every request. That meant the rule "hide
+    drafts from visitors" was only ever applied to anonymous callers, so an
+    administrator opening the public News page in the same browser saw their own
+    unpublished items, and the same happened to unpublished exam results.
+
+    Public pages now send ``?published=true``, which applies the public filter
+    whoever is asking. Leaving it off keeps the old behaviour, so the admin area
+    and the teacher pages - which genuinely need drafts - are unaffected.
+    """
+
+    #: ORM lookups that make up "public". Set on each viewset.
+    public_filter = {}
+
+    def wants_published_only(self):
+        return self.request.query_params.get('published') == 'true'
+
+    def apply_published_only(self, qs):
+        if not self.wants_published_only():
+            return qs
+        return qs.filter(**self.public_filter)
