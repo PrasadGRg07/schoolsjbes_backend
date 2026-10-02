@@ -11,8 +11,12 @@ def flush_deferred_constraints(schema_editor):
 
     Running the pending checks now clears the queue, so the schema change in
     this same migration is allowed through.
+
+    SQLite has no deferred constraints and no such statement, so the call is
+    skipped there and development migrations run on SQLite as well as Postgres.
     """
-    schema_editor.execute('SET CONSTRAINTS ALL IMMEDIATE')
+    if schema_editor.connection.vendor == 'postgresql':
+        schema_editor.execute('SET CONSTRAINTS ALL IMMEDIATE')
 
 
 def text_subjects_into_rows(apps, schema_editor):

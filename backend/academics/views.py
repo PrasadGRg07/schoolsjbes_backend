@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.decorators import action
 from accounts.permissions import IsAdminOrReadOnly, IsTeacherOrReadOnly, PublishedOnlyMixin
 from .models import (
-    Programme, Subject, SubjectFile, AcademicDocument,
+    Programme, Subject, SubjectFile, Chapter, AcademicDocument, DocumentQuestion,
     Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
     Student, Attendance,
 )
@@ -14,6 +14,7 @@ from .serializers import (
     ProgrammeSerializer,
     SubjectSerializer,
     SubjectFileSerializer,
+    ChapterSerializer,
     AcademicDocumentSerializer,
     ExamSerializer,
     ExamListSerializer,
@@ -103,10 +104,54 @@ class SubjectFileViewSet(viewsets.ModelViewSet):
             serializer.save(order=(last.order + 1) if last else 1)
 
 
-class AcademicDocumentViewSet(viewsets.ModelViewSet):
+class ChapterViewSet(viewsets.ModelViewSet):
+    """
+    Chapters belonging to a subject, narrowed with ?subject=<id>.
+
+    The document form opens with a subject chosen and needs the chapters under
+    it, so the subject is a required query parameter in practice even though the
+    filter itself is optional.
+    """
+
+    serializer_class = ChapterSerializer
+    permission_classes = [IsAdminOrReadOnly]
+    queryset = Chapter.objects.select_related('subject').all()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        subject = self.request.query_params.get('subject')
+        if subject:
+            qs = qs.filter(subject_id=subject)
+        return qs
+
+    def perform_create(self, serializer):
+        # Default a new chapter to the bottom of its subject's list.
+        if not serializer.validated_data.get('order'):
+            last = Chapter.objects.filter(
+                subject=serializer.validated_data['subject']
+            ).order_by('-order').first()
+            serializer.save(order=(last.order + 1) if last else 1)
+
+
+class AcademicDocumentViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):
+    """
+    Learning materials, filed as programme → subject → chapter.
+
+    The public pages and the admin share this endpoint, so `?published=true`
+    applies the public filter whoever is asking, the same as programmes and
+    subjects do. Documents that are still a draft stay out of the site's
+    document lists when it is asked for.
+    """
+
+    public_filter = {'status': 'published'}
     serializer_class = AcademicDocumentSerializer
     permission_classes = [IsAdminOrReadOnly]
-    queryset = AcademicDocument.objects.all()
+    queryset = AcademicDocument.objects.select_related(
+        'programme', 'subject', 'chapter'
+    ).prefetch_related('questions').all()
+
+    def get_queryset(self):
+        return self.apply_published_only(super().get_queryset())
 
 
 class ExamViewSet(PublishedOnlyMixin, viewsets.ModelViewSet):

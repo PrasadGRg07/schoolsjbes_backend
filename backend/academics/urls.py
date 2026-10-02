@@ -6,6 +6,7 @@ from .views import (
     ProgrammeViewSet,
     SubjectViewSet,
     SubjectFileViewSet,
+    ChapterViewSet,
     AcademicDocumentViewSet,
     ExamViewSet,
     StudentResultViewSet,
@@ -18,6 +19,7 @@ router = DefaultRouter()
 router.register('programmes', ProgrammeViewSet, basename='programme')
 router.register('subjects', SubjectViewSet, basename='subject')
 router.register('subject-files', SubjectFileViewSet, basename='subject-file')
+router.register('chapters', ChapterViewSet, basename='chapter')
 router.register('documents', AcademicDocumentViewSet, basename='academic-doc')
 router.register('exams', ExamViewSet, basename='exam')
 router.register('results', StudentResultViewSet, basename='student-result')

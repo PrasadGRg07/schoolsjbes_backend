@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from config.html import sanitize_html
 from .models import (
-    Programme, Subject, SubjectFile, AcademicDocument,
+    Programme, Subject, SubjectFile, Chapter, AcademicDocument, DocumentQuestion,
     Exam, StudentResult, SubjectMark, SchoolClass, ClassTeacher, TeachingSlot,
     Student, Attendance,
 )
@@ -70,10 +70,223 @@ class ProgrammeSerializer(serializers.ModelSerializer):
         return sanitize_html(value or '')
 
 
+class DocumentQuestionSerializer(serializers.ModelSerializer):
+    """
+    One question. Written nested inside the document that holds it, so the form
+    saves a document and its questions in one request.
+
+    Options are a fixed A-D set for a multiple choice question and nothing at all
+    for the other types, so the four fields are normalised here rather than
+    leaving a stale option list on a question that was retyped.
+    """
+
+    OPTION_LETTERS = ['A', 'B', 'C', 'D']
+
+    options = serializers.JSONField(required=False)
+
+    class Meta:
+        model = DocumentQuestion
+        fields = [
+            'id', 'question', 'question_type', 'options', 'correct_option',
+            'answer', 'marks', 'explanation', 'order',
+        ]
+        extra_kwargs = {
+            'document': {'required': False},
+            'question': {'required': True},
+            'question_type': {'required': False},
+            'answer': {'required': False, 'allow_blank': True},
+            'explanation': {'required': False, 'allow_blank': True},
+            'marks': {'required': False, 'allow_null': True},
+            'order': {'required': False},
+        }
+
+    def validate(self, attrs):
+        if not (attrs.get('question') or '').strip():
+            raise serializers.ValidationError({'question': 'Type the question.'})
+
+        question_type = attrs.get('question_type') or DocumentQuestion.QUESTION_TYPES[1][0]
+        options = attrs.get('options') or []
+
+        if question_type == 'multiple_choice':
+            cleaned = [str(o).strip() for o in options][:4]
+            # Short option lists are padded so the form's A-D fields always have
+            # something to show, and a question cannot be saved with fewer than
+            # four choices and no right answer.
+            while len(cleaned) < 4:
+                cleaned.append('')
+            if not all(cleaned):
+                raise serializers.ValidationError(
+                    {'options': 'Fill in all four options, or change the question type.'}
+                )
+            correct = (attrs.get('correct_option') or '').strip().upper()
+            if correct not in self.OPTION_LETTERS:
+                raise serializers.ValidationError(
+                    {'correct_option': 'Choose which option is correct.'}
+                )
+            attrs['options'] = cleaned
+            attrs['correct_option'] = correct
+        else:
+            # True/False and the written types have nothing to pick between, so
+            # anything left over from a retyped question is dropped.
+            attrs['options'] = []
+            attrs['correct_option'] = ''
+
+        return attrs
+
+
+class ChapterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Chapter
+        fields = ['id', 'subject', 'name', 'order', 'is_active', 'created_at']
+        extra_kwargs = {
+            'subject': {'required': True},
+            'name': {'required': True},
+        }
+
+
 class AcademicDocumentSerializer(serializers.ModelSerializer):
+    """A document, with its questions written inline alongside it."""
+
+    questions = DocumentQuestionSerializer(many=True, required=False)
+    question_count = serializers.SerializerMethodField()
+    programme_name = serializers.SerializerMethodField()
+    subject_name = serializers.SerializerMethodField()
+    chapter_name = serializers.SerializerMethodField()
+
     class Meta:
         model = AcademicDocument
-        fields = '__all__'
+        fields = [
+            'id', 'title', 'file_url', 'programme', 'programme_name',
+            'subject', 'subject_name', 'chapter', 'chapter_name',
+            'document_type', 'description', 'status', 'client_token',
+            'uploaded_at', 'updated_at', 'question_count', 'questions',
+        ]
+        extra_kwargs = {
+            'programme': {'required': False, 'allow_null': True},
+            'subject': {'required': False, 'allow_null': True},
+            'chapter': {'required': False, 'allow_null': True},
+            'document_type': {'required': False},
+            'status': {'required': False},
+            'description': {'required': False, 'allow_blank': True},
+            # Sent by the form as a duplicate guard. Absent from anything that
+            # does not send one, so existing callers are unaffected. The
+            # uniqueness check is left to `create` below, which hands back the
+            # row the first request already made instead of failing the form;
+            # the database constraint still catches two truly simultaneous saves.
+            'client_token': {'required': False, 'allow_blank': True, 'validators': []},
+        }
+
+    def get_question_count(self, obj):
+        return obj.questions.count()
+
+    def get_programme_name(self, obj):
+        return obj.programme.name if obj.programme_id else None
+
+    def get_subject_name(self, obj):
+        return obj.subject.name if obj.subject_id else None
+
+    def get_chapter_name(self, obj):
+        return obj.chapter.name if obj.chapter_id else None
+
+    def validate(self, attrs):
+        instance = self.instance
+
+        # A token that is already on file means this save already went through
+        # and the form is being retried. Nothing is about to be written, so the
+        # payload is left alone rather than judged against the rules of a first
+        # save; `create` then hands back the document that exists. An update
+        # carries the same token as its own stored one, so it is not skipped.
+        if instance is None:
+            token = attrs.get('client_token')
+            if token and AcademicDocument.objects.filter(client_token=token).exists():
+                return attrs
+
+        # On an update a field that was not sent keeps its stored value, so the
+        # cross-checks below have to look at the instance as well as the payload.
+        def current(field, fallback=None):
+            if field in attrs:
+                return attrs[field]
+            return getattr(instance, field, fallback) if instance else fallback
+
+        programme = current('programme')
+        subject = current('subject')
+        chapter = current('chapter')
+        document_type = current('document_type', AcademicDocument.DOCUMENT_TYPES[0][0])
+        file_url = current('file_url', '')
+        questions = attrs.get('questions')
+
+        # The form fills these in from one another, so a mistyped or stale id is
+        # caught here rather than leaving a chapter filed under the wrong subject.
+        if subject and programme and subject.programme_id != programme.id:
+            raise serializers.ValidationError(
+                {'subject': 'That subject does not belong to the chosen programme.'}
+            )
+        if chapter and subject and chapter.subject_id != subject.id:
+            raise serializers.ValidationError(
+                {'chapter': 'That chapter does not belong to the chosen subject.'}
+            )
+        if chapter and not subject:
+            raise serializers.ValidationError(
+                {'subject': 'Choose the subject before the chapter.'}
+            )
+
+        holds_questions = document_type in AcademicDocument.QUESTION_TYPES
+        # A questions document is made of its questions, and everything else is
+        # a file, so each type is asked for the one thing it needs.
+        if holds_questions:
+            if questions is not None and not questions:
+                raise serializers.ValidationError(
+                    {'questions': 'Add at least one question to a questions document.'}
+                )
+            if questions is None and not (instance and instance.questions.exists()):
+                raise serializers.ValidationError(
+                    {'questions': 'Add at least one question to a questions document.'}
+                )
+        elif not file_url:
+            raise serializers.ValidationError(
+                {'file_url': 'This document type needs a file. Upload one or paste a URL.'}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        questions = validated_data.pop('questions', [])
+        token = validated_data.get('client_token')
+        if token:
+            # A double-clicked Save arrives as the same token twice. Handing
+            # back the row the first request already made is what was meant,
+            # and leaves one document rather than two.
+            existing = AcademicDocument.objects.filter(client_token=token).first()
+            if existing:
+                return existing
+        document = AcademicDocument.objects.create(**validated_data)
+        self._replace_questions(document, questions)
+        return document
+
+    def _replace_questions(self, document, questions):
+        """
+        Write a document's questions in the order the form listed them, numbered
+        from zero so the saved sequence has no gaps. The position in the list is
+        the whole truth about the sequence, so an `order` sent by the client is
+        dropped rather than trusted: it can go stale as soon as a question is
+        removed, and keeping it would also pass `order` twice in one call.
+        """
+        document.questions.all().delete()
+        DocumentQuestion.objects.bulk_create([
+            DocumentQuestion(document=document, order=i, **{k: v for k, v in q.items() if k != 'order'})
+            for i, q in enumerate(questions)
+        ])
+
+    def update(self, instance, validated_data):
+        # The question list is replaced wholesale rather than merged, the same
+        # way the per-subject marks are under a student result, so what is
+        # saved is exactly what the form shows.
+        questions = validated_data.pop('questions', None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if questions is not None:
+            self._replace_questions(instance, questions)
+        return instance
 
 
 # ── Results ──

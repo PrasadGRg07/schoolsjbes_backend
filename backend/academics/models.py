@@ -60,14 +60,127 @@ class SubjectFile(models.Model):
         return f"{self.subject.name} — {self.title}"
 
 
+class Chapter(models.Model):
+    """
+    A chapter of a subject, e.g. "Chapter 1 - Real Numbers" under Grade 10
+    Mathematics.
+
+    This sits between the subject and the document so a file can be filed under
+    the chapter it belongs to instead of loose on the subject. Two chapters of
+    one subject cannot share a name, because the document form looks them up by
+    name as well as by id.
+    """
+
+    subject = models.ForeignKey(Subject, on_delete=models.CASCADE, related_name='chapters')
+    name = models.CharField(max_length=200)
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order', 'name']
+        constraints = [
+            models.UniqueConstraint(fields=['subject', 'name'], name='uniq_chapter_per_subject'),
+        ]
+
+    def __str__(self):
+        return f"{self.subject.name} — {self.name}"
+
+
 class AcademicDocument(models.Model):
+    """
+    A piece of learning material, filed as programme → subject → chapter.
+
+    `programme` alone used to be the only way to place a document, so notes for
+    different chapters of the same subject had nothing to tell them apart. The
+    subject and chapter narrow where the material belongs, and `document_type`
+    says what kind of thing it is.
+    """
+
+    DOCUMENT_TYPES = [
+        ('study_material', 'Chapter / Study Material'),
+        ('pdf_notes', 'PDF / Notes'),
+        ('questions', 'Questions'),
+        ('qa', 'Questions & Answers'),
+        ('assignment', 'Assignment'),
+        ('pyq', 'Previous Year Questions'),
+        ('other', 'Other'),
+    ]
+
+    STATUS = [
+        ('draft', 'Draft'),
+        ('published', 'Published'),
+    ]
+
+    #: The types that hold questions rather than a file to open.
+    QUESTION_TYPES = ('questions', 'qa')
+
     title = models.CharField(max_length=200)
-    file_url = models.URLField()
+    # Blank for a questions-only document, which has nothing to download. The
+    # serializer still requires a file for every other type.
+    file_url = models.URLField(blank=True)
     programme = models.ForeignKey(Programme, on_delete=models.SET_NULL, null=True, blank=True)
+    subject = models.ForeignKey(Subject, on_delete=models.SET_NULL, null=True, blank=True, related_name='documents')
+    chapter = models.ForeignKey(Chapter, on_delete=models.SET_NULL, null=True, blank=True, related_name='documents')
+    document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPES, default='study_material')
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=10, choices=STATUS, default='draft')
+    # A value the form makes once and resends on every save. A double-clicked
+    # Save sends it twice, which the serializer turns back into one document.
+    client_token = models.CharField(max_length=64, blank=True, db_index=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
+        constraints = [
+            # Only tokens that were actually sent take part, so documents saved
+            # by anything that does not send one are unaffected.
+            models.UniqueConstraint(
+                fields=['client_token'],
+                condition=~Q(client_token=''),
+                name='uniq_document_client_token',
+            ),
+        ]
 
     def __str__(self):
         return self.title
+
+    @property
+    def holds_questions(self):
+        return self.document_type in self.QUESTION_TYPES
+
+
+class DocumentQuestion(models.Model):
+    """One question inside a document of type Questions or Questions & Answers."""
+
+    QUESTION_TYPES = [
+        ('multiple_choice', 'Multiple Choice'),
+        ('short_answer', 'Short Answer'),
+        ('long_answer', 'Long Answer'),
+        ('true_false', 'True / False'),
+    ]
+
+    document = models.ForeignKey(AcademicDocument, on_delete=models.CASCADE, related_name='questions')
+    question = models.TextField()
+    question_type = models.CharField(max_length=20, choices=QUESTION_TYPES, default='short_answer')
+    # Option A-D for a multiple choice question, stored the way Subject.images
+    # and Programme.images are: a list on the row, because nothing is ever
+    # queried by anything except its position.
+    options = models.JSONField(default=list, blank=True)
+    # The letter of the right option, as shown to the student. Blank for the
+    # question types that have no options to pick from.
+    correct_option = models.CharField(max_length=1, blank=True)
+    answer = models.TextField(blank=True)
+    marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    explanation = models.TextField(blank=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order', 'id']
+
+    def __str__(self):
+        return self.question[:60]
 
 
 class SchoolClass(models.Model):
