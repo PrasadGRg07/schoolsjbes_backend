@@ -1,3 +1,4 @@
+from django.db.models import Q
 from rest_framework import serializers
 from config.html import sanitize_html
 from .models import (
@@ -531,17 +532,38 @@ class TeachingSlotSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source='subject.name', read_only=True)
     subject_code = serializers.CharField(source='subject.code', read_only=True)
     programme_name = serializers.SerializerMethodField()
+    is_one_off = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = TeachingSlot
         fields = [
             'id', 'teacher', 'teacher_username', 'teacher_name', 'school_class', 'class_name',
             'subject', 'subject_name', 'subject_code', 'programme_name',
-            'day_of_week', 'day_label', 'start_time', 'end_time', 'room',
+            'day_of_week', 'day_label', 'date', 'is_one_off', 'start_time', 'end_time', 'room',
         ]
         # Only an administrator writes to this, and they have to say which
         # teacher the period belongs to, so the field is a normal input.
-        extra_kwargs = {'teacher': {'required': True}}
+        extra_kwargs = {
+            'teacher': {'required': True},
+            # Left off the form for a weekly period, which is the usual case.
+            'date': {'required': False, 'allow_null': True},
+            # A dated period takes its weekday from its date, so it is not asked
+            # for. `validate` below still refuses a weekly period with no weekday.
+            'day_of_week': {'required': False},
+        }
+
+    def get_unique_together_constraints(self, model):
+        """
+        No generated uniqueness validators for the timetable.
+
+        A clash is explained in words by `_teacher_clash`, which also knows that
+        a dated lesson collides with the weekly period it lands on and the day it
+        names. The generated validators would run first and answer with a bare
+        "the fields teacher, school_class, date, start_time must make a unique
+        set", which tells the administrator nothing. The database constraints
+        stay in place as the backstop for two saves arriving at the same moment.
+        """
+        return ()
 
     def get_teacher_name(self, obj):
         return obj.teacher.get_full_name() or obj.teacher.username
@@ -598,22 +620,60 @@ class TeachingSlotSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {'end_time': 'The end time must be after the start time.'}
             )
-        # A teacher cannot be in two rooms at once. Class clashes are allowed,
-        # because the timetable records what was planned, not what happened.
-        clash = TeachingSlot.objects.filter(
-            teacher=attrs.get('teacher', getattr(self.instance, 'teacher', None)),
-            day_of_week=attrs.get('day_of_week', getattr(self.instance, 'day_of_week', None)),
-            start_time=start,
-        ).exclude(pk=self.instance.pk) if self.instance else TeachingSlot.objects.filter(
-            teacher=attrs.get('teacher'),
-            day_of_week=attrs.get('day_of_week'),
-            start_time=start,
-        )
-        if clash.exists():
+
+        instance = self.instance
+        # A dated period is filed under the weekday that date actually falls on,
+        # so the day can never contradict the date and every "Friday" grouping
+        # and clash rule keeps working. A weekly period keeps the chosen weekday,
+        # and has to have one, because there is no date to work it out from.
+        date = attrs['date'] if 'date' in attrs else getattr(instance, 'date', None)
+        day = date.weekday() if date else attrs.get('day_of_week', getattr(instance, 'day_of_week', None))
+        if date:
+            attrs['day_of_week'] = day
+        elif day is None:
+            raise serializers.ValidationError(
+                {'day_of_week': 'Choose which day this period runs on.'}
+            )
+
+        teacher = attrs.get('teacher', getattr(instance, 'teacher', None))
+        clash = self._teacher_clash(teacher, start, date, day)
+        if clash:
+            if date:
+                raise serializers.ValidationError(
+                    {'start_time': (
+                        f'This teacher already has a {clash.subject.name} period starting at '
+                        f'that time on {date:%d %B %Y}.'
+                    )}
+                )
             raise serializers.ValidationError(
                 'This teacher already has a period starting at that time on that day.'
             )
         return attrs
+
+    def _teacher_clash(self, teacher, start_time, date, day_of_week):
+        """
+        The period already on file that would put this teacher in two places at
+        once, if there is one.
+
+        A teacher cannot be in two rooms at once, so a clash is refused whatever
+        class the two periods are for. Class clashes are allowed, because the
+        timetable records what was planned, not what happened.
+
+        A dated lesson is checked against the other lessons that actually fall on
+        that date, which is both the dated ones on it and the weekly ones whose
+        weekday matches, because those weekly periods do run that day.
+        """
+        if not (teacher and start_time):
+            return None
+
+        slots = TeachingSlot.objects.select_related('subject').filter(
+            teacher=teacher, start_time=start_time
+        )
+        if self.instance:
+            slots = slots.exclude(pk=self.instance.pk)
+        if date:
+            return slots.filter(Q(date=date) | Q(date__isnull=True, day_of_week=day_of_week)).first()
+        return slots.filter(date__isnull=True, day_of_week=day_of_week).first()
 
 
 class StudentSerializer(serializers.ModelSerializer):

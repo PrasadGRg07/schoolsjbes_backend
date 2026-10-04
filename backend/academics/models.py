@@ -387,6 +387,13 @@ class TeachingSlot(models.Model):
     Kept separate from the class assignment on purpose: a teacher being in
     charge of Grade 7 says nothing about *when* they teach it, and one teacher
     often covers several subjects in the same class.
+
+    `date` is the exception to the weekly rule. Left empty the period repeats
+    every week, which is what the school runs term long. Filled in it is a
+    single lesson on one calendar day, for the things the weekly grid cannot
+    hold: an extra class before an exam, a swapped period, a single session in
+    the lab. The weekday is worked out from that date rather than asked for, so
+    a dated period can never disagree with the day it is filed under.
     """
 
     DAYS = [
@@ -412,6 +419,8 @@ class TeachingSlot(models.Model):
     # instead of quietly taking the periods with it.
     subject = models.ForeignKey(Subject, on_delete=models.PROTECT, related_name='timetable_slots')
     day_of_week = models.PositiveSmallIntegerField(choices=DAYS)
+    # Blank means "every week". A date here pins the period to that one day.
+    date = models.DateField(null=True, blank=True)
     start_time = models.TimeField()
     end_time = models.TimeField()
     room = models.CharField(max_length=100, blank=True)
@@ -419,20 +428,40 @@ class TeachingSlot(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        # `date` is left out on purpose: a blank date sorts first on SQLite and
+        # last on Postgres, so putting it in the ordering would make the timetable
+        # come back in a different order depending on the database. The views sort
+        # by date themselves where it matters.
         ordering = ['day_of_week', 'start_time', 'school_class__name']
         verbose_name = 'Teaching slot'
         verbose_name_plural = 'Teaching slots'
         constraints = [
-            # Two periods cannot start together for the same teacher and class.
+            # Two weekly periods cannot start together for the same teacher and
+            # class. Scoped to undated rows, because a dated lesson is free to sit
+            # on the same weekday and time as the weekly one it sits beside.
             models.UniqueConstraint(
                 fields=['teacher', 'school_class', 'day_of_week', 'start_time'],
+                condition=Q(date__isnull=True),
                 name='uniq_teacher_slot_start',
+            ),
+            # The same rule for one-off lessons, keyed on the exact day instead of
+            # the weekday, so the same time on two different Fridays is allowed.
+            models.UniqueConstraint(
+                fields=['teacher', 'school_class', 'date', 'start_time'],
+                condition=Q(date__isnull=False),
+                name='uniq_teacher_dated_slot_start',
             ),
         ]
 
     def __str__(self):
         day = dict(self.DAYS).get(self.day_of_week, '?')
-        return f"{self.teacher} — {self.subject} — {day} {self.start_time:%H:%M}"
+        when = f'{self.date:%d %b %Y}' if self.date else day
+        return f"{self.teacher} — {self.subject} — {when} {self.start_time:%H:%M}"
+
+    @property
+    def is_one_off(self):
+        """True for a single dated lesson, false for a weekly period."""
+        return self.date is not None
 
 
 class Student(models.Model):

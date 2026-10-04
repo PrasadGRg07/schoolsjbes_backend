@@ -3,7 +3,9 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from accounts.models import AdminUser
-from academics.models import AcademicDocument, Chapter, DocumentQuestion, Programme, Subject
+from academics.models import (
+    AcademicDocument, Chapter, DocumentQuestion, Programme, SchoolClass, Subject, TeachingSlot,
+)
 
 
 def json_client(user=None):
@@ -309,3 +311,202 @@ class DocumentVisibilityTests(DocumentTestBase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(AcademicDocument.objects.count(), 2)
+
+
+class DatedPeriodTests(TestCase):
+    """
+    A period is weekly by default, and dated only when a single day is named,
+    for the lessons the weekly grid cannot hold: an extra class, a swapped
+    period, one session in the lab.
+    """
+
+    # 2026-10-09 is a Friday, which the tests below lean on.
+    FRIDAY = '2026-10-09'
+    NEXT_FRIDAY = '2026-10-16'
+
+    def setUp(self):
+        self.client = json_client(
+            AdminUser.objects.create_user(username='boss', password='pw-for-tests-123', role='admin', is_staff=True)
+        )
+        self.teacher = AdminUser.objects.create_user(username='teacher1', password='pw-for-tests-123', role='teacher')
+        self.other_teacher = AdminUser.objects.create_user(username='teacher2', password='pw-for-tests-123', role='teacher')
+        programme = Programme.objects.create(name='Class 10', level='Secondary', duration='2 years')
+        self.school_class = SchoolClass.objects.create(name='Class 10', programme=programme)
+        self.other_class = SchoolClass.objects.create(name='Class 9', programme=programme)
+        subject = Subject.objects.create(programme=programme, name='Mathematics', code='MATH')
+        self.subject = subject
+
+    def weekly(self, day=4, start='09:45', teacher=None, school_class=None, **extra):
+        """A normal repeating period, the way the timetable has always worked."""
+        hour, minute = (int(part) for part in start.split(':'))
+        end = extra.pop('end_time', f'{hour + 1:02d}:{minute:02d}')
+        payload = {
+            'teacher': (teacher or self.teacher).id,
+            'school_class': (school_class or self.school_class).id,
+            'subject': self.subject.id,
+            'day_of_week': day,
+            'start_time': start,
+            'end_time': end,
+            'room': '101',
+        }
+        payload.update(extra)
+        return payload
+
+    def dated(self, date, start='09:45', teacher=None, **extra):
+        """A single lesson on one calendar day."""
+        payload = self.weekly(start=start, teacher=teacher, date=date)
+        payload.update(extra)
+        return payload
+
+    def test_a_period_with_no_date_stays_weekly(self):
+        response = self.client.post(reverse('teaching-slot-list'), self.weekly())
+
+        self.assertEqual(response.status_code, 201)
+        slot = TeachingSlot.objects.get()
+        self.assertIsNone(slot.date)
+        self.assertEqual(slot.day_of_week, 4)
+        self.assertFalse(slot.is_one_off)
+
+    def test_a_dated_period_takes_its_weekday_from_the_date(self):
+        """The day is worked out, so a dated period can never be filed under a
+        weekday that the date disagrees with."""
+        # 2026-10-12 is a Monday; asking for Friday alongside it must not stick.
+        response = self.client.post(reverse('teaching-slot-list'), self.dated('2026-10-12', day_of_week=4))
+
+        self.assertEqual(response.status_code, 201)
+        slot = TeachingSlot.objects.get()
+        self.assertEqual(str(slot.date), '2026-10-12')
+        self.assertEqual(slot.day_of_week, 0)
+        self.assertTrue(slot.is_one_off)
+
+    def test_the_same_class_twice_in_one_day_is_fine_at_different_times(self):
+        first = self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45'))
+        second = self.client.post(reverse('teaching-slot-list'), self.weekly(start='10:50'))
+
+        self.assertEqual((first.status_code, second.status_code), (201, 201))
+        self.assertEqual(TeachingSlot.objects.count(), 2)
+
+    def test_a_teacher_cannot_start_two_periods_at_the_same_time(self):
+        self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45'))
+
+        response = self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45', school_class=self.other_class))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('already has a period', str(response.data).lower())
+
+    def test_a_teacher_cannot_start_two_periods_at_the_same_time_on_the_same_date(self):
+        self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='09:45'))
+
+        response = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='09:45'))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(self.FRIDAY[8:10], str(response.data))
+
+    def test_the_same_time_on_a_different_date_is_allowed(self):
+        """Two Fridays in a month can each hold the extra lesson."""
+        first = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='09:45'))
+        second = self.client.post(reverse('teaching-slot-list'), self.dated(self.NEXT_FRIDAY, start='09:45'))
+
+        self.assertEqual((first.status_code, second.status_code), (201, 201))
+        self.assertEqual(TeachingSlot.objects.count(), 2)
+
+    def test_a_dated_lesson_is_refused_where_the_teacher_is_already_booked_that_day(self):
+        """The weekly period does run on that Friday, so the extra one collides."""
+        self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45'))
+
+        response = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='09:45'))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Mathematics', str(response.data))
+
+    def test_a_dated_lesson_is_fine_at_a_time_the_teacher_is_free(self):
+        self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45'))
+
+        response = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='14:00', end_time='15:00'))
+
+        self.assertEqual(response.status_code, 201)
+
+    def test_two_teachers_can_teach_at_the_same_time_on_the_same_date(self):
+        first = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, teacher=self.teacher))
+        second = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, teacher=self.other_teacher))
+
+        self.assertEqual((first.status_code, second.status_code), (201, 201))
+
+    def test_clearing_the_date_turns_a_dated_lesson_back_into_a_weekly_one(self):
+        created = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY)).data
+
+        response = self.client.patch(reverse('teaching-slot-detail', args=[created['id']]), {'date': None})
+
+        self.assertEqual(response.status_code, 200)
+        slot = TeachingSlot.objects.get()
+        self.assertIsNone(slot.date)
+        self.assertFalse(slot.is_one_off)
+
+    def test_editing_a_period_keeps_its_own_time(self):
+        """The clash check has to ignore the row being edited, or no period that
+        keeps its time could ever be saved twice."""
+        created = self.client.post(reverse('teaching-slot-list'), self.weekly()).data
+
+        response = self.client.patch(reverse('teaching-slot-detail', args=[created['id']]), {'room': '202'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(TeachingSlot.objects.get().room, '202')
+
+    def test_listing_one_date_gives_that_day_dated_lessons_only(self):
+        self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45'))
+        one_off = self.client.post(
+            reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='14:00', end_time='15:00')
+        ).data['id']
+
+        response = self.client.get(reverse('teaching-slot-list'), {'date': self.FRIDAY})
+
+        self.assertEqual([s['id'] for s in response.data['results']], [one_off])
+
+    def test_listing_one_date_can_include_the_weekly_periods_that_fall_on_it(self):
+        weekly = self.client.post(reverse('teaching-slot-list'), self.weekly(start='09:45')).data['id']
+        one_off = self.client.post(
+            reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='14:00', end_time='15:00')
+        ).data['id']
+
+        response = self.client.get(reverse('teaching-slot-list'), {'date': self.FRIDAY, 'include_weekly': 'true'})
+
+        self.assertEqual(sorted(s['id'] for s in response.data['results']), sorted([weekly, one_off]))
+        # Ordered by the time the day runs, earliest first.
+        self.assertEqual([s['id'] for s in response.data['results']], [weekly, one_off])
+
+    def test_listing_one_date_leaves_out_periods_from_another_weekday(self):
+        """A Monday period must not turn up in the Friday list."""
+        self.client.post(reverse('teaching-slot-list'), self.weekly(day=0, start='09:45'))
+
+        response = self.client.get(reverse('teaching-slot-list'), {'date': self.FRIDAY, 'include_weekly': 'true'})
+
+        self.assertEqual(response.data['count'], 0)
+
+    def test_the_whole_list_still_shows_every_period(self):
+        self.client.post(reverse('teaching-slot-list'), self.weekly())
+        self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, start='14:00', end_time='15:00'))
+
+        response = self.client.get(reverse('teaching-slot-list'))
+
+        self.assertEqual(response.data['count'], 2)
+
+    def test_a_teacher_only_sees_their_own_periods(self):
+        mine = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY)).data['id']
+        self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY, teacher=self.other_teacher, start='14:00'))
+        self.client.force_authenticate(self.teacher)
+
+        response = self.client.get(reverse('teaching-slot-list'))
+
+        self.assertEqual([s['id'] for s in response.data['results']], [mine])
+
+    def test_a_teacher_cannot_add_a_period(self):
+        self.client.force_authenticate(self.teacher)
+
+        response = self.client.post(reverse('teaching-slot-list'), self.dated(self.FRIDAY))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_the_weekday_filter_still_reports_a_mismatch(self):
+        response = self.client.post(reverse('teaching-slot-list'), self.weekly(start='12:00', end_time='11:00'))
+
+        self.assertEqual(response.status_code, 400)

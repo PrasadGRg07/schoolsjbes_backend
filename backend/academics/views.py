@@ -1,5 +1,7 @@
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets, filters
 from rest_framework.response import Response
 from rest_framework import status
@@ -361,26 +363,55 @@ class SchoolClassViewSet(viewsets.ModelViewSet):
 
 class TeachingSlotViewSet(viewsets.ModelViewSet):
     """
-    The weekly timetable.
+    The weekly timetable, plus any single dated lesson added to it.
 
     Everyone who is signed in may read it, but a teacher only ever sees their
     own periods while an administrator sees the whole school. Only an
     administrator builds or changes the timetable, because it is a school-wide
     plan rather than something a teacher sets privately.
+
+    `?date=YYYY-MM-DD` narrows the list to the lessons on one day: the dated
+    ones filed on it, and with `include_weekly=true` the weekly periods that
+    fall on that weekday too, which is what "what runs today" needs to answer.
     """
 
     serializer_class = TeachingSlotSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['subject__name', 'teacher__username', 'teacher__first_name', 'school_class__name']
-    ordering_fields = ['day_of_week', 'start_time', 'end_time']
+    ordering_fields = ['day_of_week', 'date', 'start_time', 'end_time']
 
     def get_queryset(self):
-        qs = TeachingSlot.objects.select_related('teacher', 'school_class', 'school_class__programme')
+        qs = TeachingSlot.objects.select_related('teacher', 'school_class', 'school_class__programme', 'subject')
         user = self.request.user
         if not (user.is_authenticated and user.is_staff):
             qs = qs.filter(teacher=user)
-        return qs
+
+        day = self._requested_date()
+        if day:
+            qs = qs.filter(Q(date=day) | Q(date__isnull=True, day_of_week=day.weekday()))
+            if not self._flag('include_weekly'):
+                qs = qs.filter(date=day)
+            # Everything left falls on the one day asked for, so it reads as a
+            # single day's timetable: earliest first, dated lessons marked.
+            return qs.order_by('start_time', 'date', 'school_class__name')
+
+        # No day picked: the weekly grid, with any one-off lessons gathered at
+        # the end of their weekday so they cannot hide between the weekly rows.
+        return qs.order_by('day_of_week', 'date', 'start_time', 'school_class__name')
+
+    def _requested_date(self):
+        """The `date` query parameter as a date, or None if absent or unreadable."""
+        raw = (self.request.query_params.get('date') or '').strip()
+        if not raw:
+            return None
+        try:
+            return parse_date(raw)
+        except ValueError:
+            return None
+
+    def _flag(self, name):
+        return (self.request.query_params.get(name) or '').strip().lower() in ('1', 'true', 'yes')
 
 
 def teacher_class_ids(user):
